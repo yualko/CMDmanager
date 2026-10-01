@@ -37,7 +37,11 @@ third_party/          WebView2 SDK, nlohmann/json
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (в Windows 11 уже установлен)
 - Установленный [Claude Code](https://docs.claude.com/claude-code), команда `claude` должна быть доступна в `PATH`
 
-## Сборка
+## Скачать
+
+Готовая сборка лежит на странице [Releases](https://github.com/yualko/CMDmanager/releases/latest). Скачайте zip, распакуйте и запустите `CMDManager.exe` (папка `web` должна лежать рядом с exe).
+
+## Сборка из исходников
 
 Нужна Visual Studio 2022 (или Build Tools) с компонентом **«Разработка классических приложений на C++»**. Все зависимости уже лежат в репозитории.
 

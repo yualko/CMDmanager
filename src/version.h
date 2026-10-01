@@ -4,10 +4,10 @@
 // Для тестовой сборки обновлений: /DCMDM_VERSION_OVERRIDE плюс свои CMDM_VERSION_* (MAJOR, MINOR, PATCH, STR, WSTR).
 #ifndef CMDM_VERSION_OVERRIDE
 #define CMDM_VERSION_MAJOR 1
-#define CMDM_VERSION_MINOR 5
+#define CMDM_VERSION_MINOR 6
 #define CMDM_VERSION_PATCH 0
-#define CMDM_VERSION_STR "1.5.0"
-#define CMDM_VERSION_WSTR L"1.5.0"
+#define CMDM_VERSION_STR "1.6.0"
+#define CMDM_VERSION_WSTR L"1.6.0"
 #endif
 
 #define CMDM_GITHUB_REPO "yualko/CMDmanager"

@@ -387,3 +387,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 /* ---------- консоли без агента ---------- */
 .tag.console { background: rgba(154, 156, 171, .16); color: var(--text-dim); }
 #btn-new-console { align-self: center; }
+
+/* ---------- шрифты для китайского и японского интерфейса ---------- */
+:root:lang(ja) { --ui-font: "Segoe UI Variable Text", "Segoe UI", "Yu Gothic UI", "Meiryo UI", system-ui, sans-serif; }
+:root:lang(zh) { --ui-font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif; }
+:root:lang(ja) .section-title, :root:lang(zh) .section-title { letter-spacing: 0; }
+.chip svg { width: 13px; height: 13px; flex: none; }
+.chip { white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }

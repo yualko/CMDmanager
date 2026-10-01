@@ -14,7 +14,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\pack-web.ps1 -Source w
 rc /nologo /c 65001 /fo build\app.res src\app.rc || exit /b 1
 cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W3 /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN ^
    /Ithird_party /Ithird_party\webview2 /Fobuild\ /Fdbuild\ ^
-   src\main.cpp src\pty_session.cpp src\ssh_tools.cpp src\installer.cpp src\update.cpp build\app.res ^
+   src\main.cpp src\pty_session.cpp src\ssh_tools.cpp src\installer.cpp src\update.cpp src\i18n.cpp build\app.res ^
    /Fe:build\CMDManager.exe ^
    /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:src\app.manifest ^
    third_party\webview2\WebView2LoaderStatic.lib user32.lib gdi32.lib ole32.lib shell32.lib dwmapi.lib advapi32.lib version.lib comctl32.lib shlwapi.lib winhttp.lib || exit /b 1

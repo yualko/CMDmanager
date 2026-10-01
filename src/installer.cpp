@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <vector>
 
+#include "i18n.h"
 #include "version.h"
 
 namespace fs = std::filesystem;
@@ -103,7 +104,7 @@ bool CloseRunningInstances(const fs::path& exe, HWND owner) {
     auto list = RunningInstances(exe);
     if (list.empty()) return true;
     if (MessageBoxW(owner,
-                    L"CMD Manager сейчас запущен.\n\nЗакрыть его, чтобы продолжить? Открытые консоли (и Claude в них) будут закрыты.",
+                    Tr(L"CMD Manager сейчас запущен.\n\nЗакрыть его, чтобы продолжить? Открытые консоли и ИИ-агенты в них будут закрыты.").c_str(),
                     kAppName, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON1) != IDYES)
         return false;
     for (const auto& inst : list) PostMessageW(inst.hwnd, QuitForUpdateMessage(), 0, 0);
@@ -111,7 +112,7 @@ bool CloseRunningInstances(const fs::path& exe, HWND owner) {
     // Старые версии не знают «тихого» сообщения — просим закрыться обычным способом.
     for (const auto& inst : list) PostMessageW(inst.hwnd, WM_CLOSE, 0, 0);
     if (WaitForPids(list, 120000)) return true;
-    ShowError(owner, L"Не удалось закрыть запущенный CMD Manager. Закройте его вручную и повторите.");
+    ShowError(owner, Tr(L"Не удалось закрыть запущенный CMD Manager. Закройте его вручную и повторите."));
     return false;
 }
 
@@ -123,7 +124,7 @@ bool CopySelfTo(const fs::path& target, std::wstring* error) {
     fs::path tmp = target;
     tmp += L".new";
     if (!CopyFileW(SelfPath().c_str(), tmp.c_str(), FALSE)) {
-        *error = L"Не удалось скопировать программу в " + target.parent_path().wstring();
+        *error = TrF(L"Не удалось скопировать программу в {0}", {target.parent_path().wstring()});
         return false;
     }
     // exe может ещё несколько мгновений быть занят закрывающимся процессом.
@@ -132,7 +133,7 @@ bool CopySelfTo(const fs::path& target, std::wstring* error) {
         Sleep(250);
     }
     fs::remove(tmp, ec);
-    *error = L"Файл " + target.wstring() + L" занят. Закройте CMD Manager и повторите.";
+    *error = TrF(L"Файл {0} занят. Закройте CMD Manager и повторите.", {target.wstring()});
     return false;
 }
 
@@ -141,7 +142,7 @@ bool CreateShortcut(const fs::path& lnk, const fs::path& target) {
     if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) return false;
     link->SetPath(target.c_str());
     link->SetWorkingDirectory(target.parent_path().c_str());
-    link->SetDescription(L"Консоли проектов Claude Code в одном окне");
+    link->SetDescription(Tr(L"Консоли проектов ИИ-агентов в одном окне").c_str());
     link->SetIconLocation(target.c_str(), 0);
     ComPtr<IPersistFile> file;
     if (FAILED(link.As(&file))) return false;
@@ -225,33 +226,37 @@ HRESULT CALLBACK TaskDialogLinks(HWND, UINT msg, WPARAM, LPARAM lp, LONG_PTR) {
 
 int ShowInstallDialog(HINSTANCE hInst, bool* desktopShortcut) {
     const std::wstring installed = InstalledVersion();
-    std::wstring title = installed.empty() ? L"Установить CMD Manager " CMDM_VERSION_WSTR
-                                           : L"Обновить CMD Manager до версии " CMDM_VERSION_WSTR;
+    std::wstring title = installed.empty() ? TrF(L"Установить CMD Manager {0}", {CMDM_VERSION_WSTR})
+                                           : TrF(L"Обновить CMD Manager до версии {0}", {CMDM_VERSION_WSTR});
     std::wstring content =
         installed.empty()
-            ? L"Консоли проектов Claude Code в одном окне: вкладки, сетка, проекты в один клик, работа с серверами по SSH.\n\n"
-              L"Программа будет установлена в\n" + InstallDir().wstring() + L"\nПрава администратора не нужны."
-            : L"Сейчас установлена версия " + installed + L". Список проектов и настройки сохранятся.";
-    const std::wstring footer = std::wstring(L"Разработка ") + kPublisher + L" · <a href=\"" + kPublisherUrl +
-                                L"\">itradmin.ru</a>";
+            ? Tr(L"Консоли проектов ИИ-агентов в одном окне: вкладки, сетка, проекты в один клик, работа с серверами по SSH.") +
+                  L"\n\n" + TrF(L"Программа будет установлена в\n{0}\nПрава администратора не нужны.", {InstallDir().wstring()})
+            : TrF(L"Сейчас установлена версия {0}. Список проектов и настройки сохранятся.", {installed});
+    const std::wstring footer = Tr(L"Разработка ООО «Аутсорсинг трейд»") + L" · <a href=\"" + kPublisherUrl + L"\">itradmin.ru</a>";
+    const std::wstring installText = installed.empty() ? Tr(L"Установить") : Tr(L"Обновить");
+    const std::wstring portableText = Tr(L"Запустить без установки");
+    const std::wstring windowTitle = Tr(L"Установка CMD Manager");
+    const std::wstring desktopText = Tr(L"Создать ярлык на рабочем столе");
+    const std::wstring cancelText = Tr(L"Отмена");  // стандартная кнопка Windows была бы на языке системы
 
     TASKDIALOG_BUTTON buttons[] = {
-        {kBtnInstall, installed.empty() ? L"Установить" : L"Обновить"},
-        {kBtnPortable, L"Запустить без установки"},
+        {kBtnInstall, installText.c_str()},
+        {kBtnPortable, portableText.c_str()},
+        {IDCANCEL, cancelText.c_str()},
     };
     TASKDIALOGCONFIG cfg{sizeof(cfg)};
     cfg.hInstance = hInst;
     cfg.dwFlags = TDF_USE_HICON_MAIN | TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
     if (installed.empty()) cfg.dwFlags |= TDF_VERIFICATION_FLAG_CHECKED;
-    cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
-    cfg.pszWindowTitle = L"Установка CMD Manager";
+    cfg.pszWindowTitle = windowTitle.c_str();
     cfg.hMainIcon = static_cast<HICON>(LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON, 64, 64, 0));
     cfg.pszMainInstruction = title.c_str();
     cfg.pszContent = content.c_str();
     cfg.pButtons = buttons;
     cfg.cButtons = static_cast<UINT>(std::size(buttons));
     cfg.nDefaultButton = kBtnInstall;
-    cfg.pszVerificationText = installed.empty() ? L"Создать ярлык на рабочем столе" : nullptr;
+    cfg.pszVerificationText = installed.empty() ? desktopText.c_str() : nullptr;
     cfg.pszFooter = footer.c_str();
     cfg.pfCallback = TaskDialogLinks;
 
@@ -263,7 +268,7 @@ int ShowInstallDialog(HINSTANCE hInst, bool* desktopShortcut) {
 }
 
 int RunUninstall() {
-    if (MessageBoxW(nullptr, L"Удалить CMD Manager с этого компьютера?", kAppName, MB_ICONQUESTION | MB_YESNO) != IDYES)
+    if (MessageBoxW(nullptr, Tr(L"Удалить CMD Manager с этого компьютера?").c_str(), kAppName, MB_ICONQUESTION | MB_YESNO) != IDYES)
         return 0;
     const fs::path target = InstalledExePath();
     if (!CloseRunningInstances(target, nullptr)) return 1;
@@ -276,8 +281,8 @@ int RunUninstall() {
     const fs::path data = KnownFolder(FOLDERID_RoamingAppData) / L"CMDManager";
     if (fs::exists(data, ec) &&
         MessageBoxW(nullptr,
-                    (L"Удалить также список проектов и настройки?\n\n" + data.wstring() +
-                     L"\n\nSSH-ключи в папке .ssh не затрагиваются.")
+                    TrF(L"Удалить также список проектов и настройки?\n\n{0}\n\nSSH-ключи в папке .ssh не затрагиваются.",
+                        {data.wstring()})
                         .c_str(),
                     kAppName, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) == IDYES)
         fs::remove_all(data, ec);
@@ -295,7 +300,7 @@ int RunUninstall() {
             CloseHandle(pi.hThread);
         }
     }
-    MessageBoxW(nullptr, L"CMD Manager удалён.", kAppName, MB_ICONINFORMATION | MB_OK);
+    MessageBoxW(nullptr, Tr(L"CMD Manager удалён.").c_str(), kAppName, MB_ICONINFORMATION | MB_OK);
     return 0;
 }
 
@@ -360,7 +365,7 @@ bool LaunchUpdater(const std::wstring& setupPath, std::wstring* error) {
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-        *error = L"Не удалось запустить установщик (код " + std::to_wstring(GetLastError()) + L")";
+        *error = TrF(L"Не удалось запустить установщик (код {0})", {std::to_wstring(GetLastError())});
         return false;
     }
     CloseHandle(pi.hProcess);

@@ -21,6 +21,7 @@
 #include "WebView2.h"
 #include "nlohmann/json.hpp"
 #include "pty_session.h"
+#include "i18n.h"
 #include "installer.h"
 #include "ssh_tools.h"
 #include "update.h"
@@ -419,6 +420,7 @@ void HandleWebMessage(const std::string& text) {
                    {"home", PathToUtf8(KnownFolder(FOLDERID_Profile))},
                    {"osBuild", WindowsBuildNumber()},
                    {"version", CMDM_VERSION_STR},
+                   {"systemLanguage", I18nSystemLanguage()},
                    {"installed", fs::path(InstalledExePath()) == fs::path(ExeDir() / L"CMDManager.exe")},
                    {"hasSsh", OpenSshAvailable()},
                    {"dataDir", PathToUtf8(g_dataDir)}});
@@ -528,6 +530,8 @@ void HandleWebMessage(const std::string& text) {
             post({{"type", "updateError"}, {"message", error}});
             PostMessageW(g_hwnd, WM_APP_UPDATE_READY, 0, 0);  // сброс флага
         }).detach();
+    } else if (type == "setLanguage") {
+        I18nSetLanguage(m.value("lang", std::string()));
     } else if (type == "setTitle") {
         std::wstring t = Utf8ToWide(m.value("title", std::string()));
         SetWindowTextW(g_hwnd, t.empty() ? kAppTitle : (t + L" — " + kAppTitle).c_str());
@@ -547,7 +551,7 @@ void ResizeWebView() {
 
 HRESULT OnControllerCreated(HRESULT result, ICoreWebView2Controller* controller) {
     if (FAILED(result) || !controller) {
-        ShowFatal(L"Не удалось создать WebView2 (код " + std::to_wstring(result) + L").");
+        ShowFatal(TrF(L"Не удалось создать WebView2 (код {0}).", {std::to_wstring(result)}));
         return S_OK;
     }
     g_controller = controller;
@@ -684,7 +688,7 @@ void CreateWebView() {
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 if (FAILED(result) || !env) {
-                    ShowFatal(L"Не найден WebView2 Runtime. Установите его: https://go.microsoft.com/fwlink/p/?LinkId=2124703");
+                    ShowFatal(Tr(L"Не найден WebView2 Runtime. Установите его: https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
                     PostQuitMessage(1);
                     return S_OK;
                 }
@@ -695,7 +699,7 @@ void CreateWebView() {
             })
             .Get());
     if (FAILED(hr)) {
-        ShowFatal(L"Не удалось инициализировать WebView2 (код " + std::to_wstring(hr) + L").");
+        ShowFatal(TrF(L"Не удалось инициализировать WebView2 (код {0}).", {std::to_wstring(hr)}));
         PostQuitMessage(1);
     }
 }
@@ -769,8 +773,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CLOSE: {
             const int live = LiveSessionCount();
             if (live > 0) {
-                std::wstring text = L"Открыто активных консолей: " + std::to_wstring(live) +
-                                    L".\nВсе запущенные в них процессы (включая Claude Code) будут завершены.\n\nЗакрыть CMD Manager?";
+                std::wstring text = TrF(L"Открыто активных консолей: {0}.\nВсе запущенные в них процессы (включая ИИ-агентов) будут завершены.\n\nЗакрыть CMD Manager?",
+                                        {std::to_wstring(live)});
                 if (MessageBoxW(hwnd, text.c_str(), kAppTitle, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) != IDYES)
                     return 0;
             }
@@ -816,14 +820,30 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     std::error_code ec;
     g_webDir = FindWebDir();
 
+    // Словарь переводов: из папки web (разработка) или из ресурсов exe; язык — из настроек или язык Windows.
+    {
+        std::string dict;
+        if (!g_webDir.empty()) ReadFileUtf8(g_webDir / L"i18n.json", &dict);
+        else if (LoadEmbeddedWeb() && g_embedded.count("i18n.json"))
+            dict.assign(reinterpret_cast<const char*>(g_embedded["i18n.json"].data), g_embedded["i18n.json"].size);
+        I18nLoad(dict);
+        std::string stateText, lang;
+        if (ReadFileUtf8(g_dataDir / L"state.json", &stateText)) {
+            json st = json::parse(stateText, nullptr, false);
+            if (!st.is_discarded() && st.is_object() && st.contains("settings") && st["settings"].is_object())
+                lang = st["settings"].value("language", std::string());
+        }
+        I18nSetLanguage(lang);
+    }
+
     // Установка / обновление / удаление (один exe в релизе — он же установщик).
     if (int code = 0; RunInstallerIfNeeded(hInst, !g_webDir.empty(), &code)) {
         CoUninitialize();
         return code;
     }
     fs::create_directories(g_dataDir, ec);
-    if (g_webDir.empty() && !LoadEmbeddedWeb()) {
-        MessageBoxW(nullptr, L"Повреждён файл программы: не найден встроенный интерфейс. Скачайте установщик заново.",
+    if (g_webDir.empty() && g_embedded.empty() && !LoadEmbeddedWeb()) {
+        MessageBoxW(nullptr, Tr(L"Повреждён файл программы: не найден встроенный интерфейс. Скачайте установщик заново.").c_str(),
                     kAppTitle, MB_ICONERROR | MB_OK);
         return 1;
     }

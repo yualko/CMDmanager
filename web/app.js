@@ -53,12 +53,13 @@ const state = {
     sidebar: true,
     projectsRoot: '',
     restoreSessions: false,
+    language: '',  // '' — как в Windows
     checkUpdates: true,
   },
   openProjects: [], // проекты, открытые при последнем закрытии (для восстановления)
 };
 
-const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '' };
+const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '', systemLanguage: 'ru' };
 
 const sessions = new Map();  // id -> Session
 let tabOrder = [];           // порядок вкладок (id сессий)
@@ -107,16 +108,16 @@ const baseName = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const normPath = (p) => p.replace(/[\\/]+$/, '').toLowerCase();
 
 function relTime(ts) {
-  if (!ts) return 'не открывался';
+  if (!ts) return t('не открывался');
   const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return 'только что';
+  if (s < 60) return t('только что');
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} мин назад`;
+  if (m < 60) return t('{0} мин назад', m);
   const h = Math.round(m / 60);
-  if (h < 24) return `${h} ч назад`;
+  if (h < 24) return t('{0} ч назад', h);
   const d = Math.round(h / 24);
-  if (d < 7) return `${d} дн назад`;
-  return new Date(ts).toLocaleDateString('ru-RU');
+  if (d < 7) return t('{0} дн назад', d);
+  return new Date(ts).toLocaleDateString(i18nLocale());
 }
 
 let saveTimer = null;
@@ -158,7 +159,7 @@ function remoteDirExpr(dir) {
 // Команда для сервера: перейти в папку, запустить команду и остаться в интерактивном шелле.
 // Запускаем через login+interactive шелл, чтобы подхватились PATH из ~/.profile и ~/.bashrc (туда ставится claude).
 function sshRemoteCommand(dir, command) {
-  const inner = `cd ${remoteDirExpr(dir)} 2>/dev/null || echo "Папка не найдена: "${shQuote(dir || '~')}; ` +
+  const inner = `cd ${remoteDirExpr(dir)} 2>/dev/null || echo ${shQuote(t('Папка не найдена: {0}', dir || '~'))}; ` +
     `${command ? `${command}; ` : ''}exec "$SHELL" -l`;
   return `exec "$SHELL" -lic ${shQuote(inner)}`;
 }
@@ -284,7 +285,7 @@ function launchControls(launch, { target = 'local', user = '', available = null,
   function fillAgents(selected) {
     agentSel.replaceChildren(...AGENTS.map((a) => {
       const missing = available && !available.has(a.id);
-      return el('option', { value: a.id, selected: a.id === selected }, `${a.name}${missing ? ' — не найден' : ''}`);
+      return el('option', { value: a.id, selected: a.id === selected }, `${a.name}${missing ? ` — ${t('не найден')}` : ''}`);
     }));
   }
   const read = () => ({ agent: agentSel.value, mode: modeSel.value, custom: custom.value.trim(), cont: cont.checked });
@@ -300,7 +301,9 @@ function launchControls(launch, { target = 'local', user = '', available = null,
     label.textContent = title || (target === 'remote' ? 'Агент на сервере' : 'ИИ-агент');
     const missing = agentMode && available && !available.has(r.agent);
     hint.hidden = !missing;
-    hint.textContent = missing ? `${a.name} не найден${target === 'remote' ? ' на сервере' : ' на этом компьютере'} — команда «${a.cmd}» может не запуститься.` : '';
+    hint.textContent = !missing ? '' : target === 'remote'
+      ? t('{0} не найден на сервере — команда «{1}» может не запуститься.', a.name, a.cmd)
+      : t('{0} не найден на этом компьютере — команда «{1}» может не запуститься.', a.name, a.cmd);
     const { command } = buildLaunch(r, { shell: target === 'remote' ? 'sh' : 'ps', root: target === 'remote' && user === 'root' });
     preview.textContent = command ? `${target === 'remote' ? '$' : '>'} ${command}` : 'Откроется только консоль';
   }
@@ -335,10 +338,9 @@ function sshCommandFor(ssh) {
 function defaultRemotePrompt(ssh) {
   const cmd = sshCommandFor(ssh);
   const dir = ssh.dir || '~';
-  return `Работаем с проектом на удалённом сервере ${ssh.user}@${ssh.host}, папка проекта: ${dir}. ` +
-    `Подключение по SSH по ключу, без пароля: ${cmd}. ` +
-    `Все команды по проекту выполняй на сервере через этот ssh, отдельным вызовом на каждую команду, например: ${cmd} 'cd ${dir} && ls -la'. ` +
-    'Файлы читай и редактируй прямо на сервере. Сначала подключись и кратко опиши, что лежит в папке проекта.';
+  return t('Работаем с проектом на удалённом сервере {0}, папка проекта: {1}. Подключение по SSH по ключу, без пароля: {2}. ' +
+    'Все команды по проекту выполняй на сервере через этот ssh, отдельным вызовом на каждую команду, например: {2} \'cd {1} && ls -la\'. ' +
+    'Файлы читай и редактируй прямо на сервере. Сначала подключись и кратко опиши, что лежит в папке проекта.', `${ssh.user}@${ssh.host}`, dir, cmd);
 }
 
 function defaultLocalDir(ssh, name) {
@@ -356,7 +358,7 @@ function agentPlacementControls({ at = 'remote', localDir = '', prompt = '', lau
   const dirInput = el('input', { type: 'text', class: 'mono', value: localDir, spellcheck: 'false' });
   dirInput.addEventListener('input', () => { dirTouched = dirInput.value.trim() !== ''; });
   const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
-    const r = await native.request('pickFolder', { title: 'Локальная папка для агента', initial: dirInput.value || defaultProjectsRoot() });
+    const r = await native.request('pickFolder', { title: t('Локальная папка для агента'), initial: dirInput.value || defaultProjectsRoot() });
     if (r.path) { dirInput.value = r.path; dirTouched = true; }
   } }, 'Обзор…');
   const promptInput = el('textarea', { rows: 5, spellcheck: 'false' }, prompt);
@@ -525,8 +527,10 @@ class Session {
     this.busy = false;
     this.pendingPrompt = '';
     clearTimeout(this.promptTimer);
-    const what = this.ssh ? 'Соединение закрыто' : 'Процесс завершён';
-    this.term.write(`\r\n\x1b[90m[${what}, код ${code}. Enter — ${this.ssh ? 'переподключиться' : 'перезапустить'}, Ctrl+Shift+W — закрыть вкладку]\x1b[0m\r\n`);
+    const text = this.ssh
+      ? t('Соединение закрыто, код {0}. Enter — переподключиться, Ctrl+Shift+W — закрыть вкладку', code)
+      : t('Процесс завершён, код {0}. Enter — перезапустить, Ctrl+Shift+W — закрыть вкладку', code);
+    this.term.write(`\r\n\x1b[90m[${text}]\x1b[0m\r\n`);
     renderAll();
   }
 
@@ -642,7 +646,7 @@ native.on('spawnError', (m) => {
   const s = sessions.get(m.id);
   if (!s) return;
   s.status = 'exited';
-  s.term.write(`\x1b[31mНе удалось запустить консоль: ${m.message}\x1b[0m\r\n`);
+  s.term.write(`\x1b[31m${t('Не удалось запустить консоль: {0}', i18nTranslate(m.message))}\x1b[0m\r\n`);
   toast(m.message, 'error');
   renderAll();
 });
@@ -960,7 +964,7 @@ function renderProjects() {
     const attention = open.some((s) => s.attention);
     return el('li', {
       class: `project${p.id === activeProject ? ' active' : ''}${missing ? ' missing' : ''}`,
-      title: `${p.path}${missing ? '\nПапка не найдена' : ''}\nКлик — открыть, правый клик — меню`,
+      title: `${p.path}${missing ? `\n${t('Папка не найдена')}` : ''}\n${t('Клик — открыть, правый клик — меню')}`,
       onclick: () => openProject(p),
       oncontextmenu: (e) => { e.preventDefault(); projectMenu(p, e.clientX, e.clientY); },
     },
@@ -1193,7 +1197,7 @@ function createProjectDialog() {
     launch.addEventListener('change', update);
 
     const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
-      const r = await native.request('pickFolder', { title: 'Где создать папку проекта', initial: parent.value });
+      const r = await native.request('pickFolder', { title: t('Где создать папку проекта'), initial: parent.value });
       if (r.path) { parent.value = r.path; update(); }
     } }, 'Обзор…');
 
@@ -1491,7 +1495,7 @@ function newConsoleMenu(anchor) {
 }
 
 async function openLocalFolderFlow() {
-  const r = await native.request('pickFolder', { title: 'Выберите папку проекта', initial: defaultProjectsRoot() });
+  const r = await native.request('pickFolder', { title: t('Выберите папку проекта'), initial: defaultProjectsRoot() });
   if (!r.path) return;
   const existing = findProjectByPath(r.path);
   if (existing) { openProject(existing); return; }
@@ -1521,7 +1525,7 @@ function editProjectDialog(p) {
     const agentCtl = launchControls(p.launch || defaultLaunch(), { target: 'local', available: localAgents });
     const error = el('div', { class: 'modal-error' });
     const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
-      const r = await native.request('pickFolder', { title: 'Папка проекта', initial: path.value });
+      const r = await native.request('pickFolder', { title: t('Папка проекта'), initial: path.value });
       if (r.path) path.value = r.path;
     } }, 'Обзор…');
     const form = el('form', { onsubmit: (e) => {
@@ -1617,7 +1621,7 @@ function settingsDialog() {
     const st = state.settings;
     const shells = ['powershell.exe', 'pwsh.exe'];
     const shell = el('select', {}, shells.map((sh) => el('option', { value: sh, selected: st.shell === sh },
-      sh === 'pwsh.exe' ? `PowerShell 7 (pwsh.exe)${env.hasPwsh ? '' : ' — не установлен'}` : 'Windows PowerShell (powershell.exe)')));
+      sh === 'pwsh.exe' ? `PowerShell 7 (pwsh.exe)${env.hasPwsh ? '' : ` — ${t('не установлен')}`}` : 'Windows PowerShell (powershell.exe)')));
     if (!shells.includes(st.shell)) shell.append(el('option', { value: st.shell, selected: true }, st.shell));
     const agentCtl = launchControls(defaultLaunch(), { target: 'local', available: localAgents, title: 'ИИ-агент для новых проектов' });
     // Свои команды и флаги агентов (на случай, если у агента другая версия или он назван иначе).
@@ -1635,10 +1639,14 @@ function settingsDialog() {
     const fontSize = el('input', { type: 'number', min: 8, max: 32, value: st.fontSize });
     const root = el('input', { type: 'text', class: 'mono', value: defaultProjectsRoot(), spellcheck: 'false' });
     const restore = el('input', { type: 'checkbox', checked: st.restoreSessions });
+    // Названия языков — на самих языках, их не переводим.
+    const language = el('select', { 'data-no-i18n': '' },
+      el('option', { value: '', selected: !st.language }, `${t('Как в Windows')} (${(LANGUAGES.find(([c]) => c === i18nResolve('', env.systemLanguage)) || LANGUAGES[1])[1]})`),
+      LANGUAGES.map(([code, label]) => el('option', { value: code, selected: st.language === code }, label)));
     const checkUpdates = el('input', { type: 'checkbox', checked: st.checkUpdates !== false });
     const checkNow = el('button', { type: 'button', class: 'btn small-btn', onclick: () => checkForUpdates(true) }, 'Проверить сейчас');
     const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
-      const r = await native.request('pickFolder', { title: 'Папка для новых проектов', initial: root.value });
+      const r = await native.request('pickFolder', { title: t('Папка для новых проектов'), initial: root.value });
       if (r.path) root.value = r.path;
     } }, 'Обзор…');
 
@@ -1655,12 +1663,14 @@ function settingsDialog() {
       detectLocalAgents().then(renderProjects);
       st.projectsRoot = root.value.trim();
       st.restoreSessions = restore.checked;
+      if (language.value !== (st.language || '')) setLanguage(language.value);
       st.checkUpdates = checkUpdates.checked;
       const fs = Math.min(32, Math.max(8, Number(fontSize.value) || 14));
       if (fs !== st.fontSize) applyFontSize(fs);
       close();
       saveState();
     } },
+      el('div', { class: 'field' }, el('label', {}, 'Язык интерфейса'), language),
       el('div', { class: 'field' }, el('label', {}, 'Оболочка'), shell),
       agentCtl.node,
       overrides,
@@ -1673,6 +1683,14 @@ function settingsDialog() {
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Сохранить')));
     modal.append(el('h2', {}, 'Настройки'), form);
   });
+}
+
+function setLanguage(code) {
+  state.settings.language = code;
+  i18nSetLanguage(i18nResolve(code, env.systemLanguage));
+  native.send({ type: 'setLanguage', lang: I18N.lang });
+  renderAll();
+  saveState();
 }
 
 function applyFontSize(size) {
@@ -1806,7 +1824,7 @@ $('#welcome').addEventListener('click', (e) => {
 setInterval(renderProjects, 60_000);  // обновить «N мин назад»
 
 native.on('init', async (m) => {
-  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '' });
+  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '', systemLanguage: m.systemLanguage || 'ru' });
   const saved = m.state;
   if (saved && typeof saved === 'object') {
     if (Array.isArray(saved.projects)) state.projects = saved.projects.filter((p) => p && p.path);
@@ -1830,6 +1848,9 @@ native.on('init', async (m) => {
       : { agent: 'claude', mode: 'custom', custom: c, cont: false };
   }
   delete state.settings.command;
+  await i18nLoad();
+  i18nSetLanguage(i18nResolve(state.settings.language, env.systemLanguage));
+  native.send({ type: 'setLanguage', lang: I18N.lang });
   await detectLocalAgents();
   const def = defaultLaunch();
   if ((def.mode === 'skip' || def.mode === 'normal') && !localAgents.has(def.agent))

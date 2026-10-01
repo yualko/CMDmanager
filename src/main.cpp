@@ -270,8 +270,29 @@ void SpawnSession(const json& m) {
     } else {
         cmdLine = BuildCommandLine(m.value("shell", std::string()), m.value("command", std::string()));
     }
+    // Аккаунт: свои папки агентов через переменные окружения. Папки создаём заранее,
+    // файлы (например, настройку Codex «хранить вход в файле») пишем, только если их ещё нет.
+    std::vector<std::pair<std::wstring, std::wstring>> extraEnv;
+    if (m.contains("env") && m["env"].is_object())
+        for (auto it = m["env"].begin(); it != m["env"].end(); ++it)
+            if (it.value().is_string()) extraEnv.emplace_back(Utf8ToWide(it.key()), Utf8ToWide(it.value().get<std::string>()));
+    for (const auto& d : m.value("ensureDirs", json::array())) {
+        std::error_code dirEc;
+        if (d.is_string()) fs::create_directories(fs::path(Utf8ToWide(d.get<std::string>())), dirEc);
+    }
+    if (m.contains("files") && m["files"].is_object()) {
+        for (auto it = m["files"].begin(); it != m["files"].end(); ++it) {
+            const fs::path file = Utf8ToWide(it.key());
+            std::error_code fileEc;
+            if (it.value().is_string() && file.is_absolute() && !fs::exists(file, fileEc)) {
+                fs::create_directories(file.parent_path(), fileEc);
+                std::ofstream(file, std::ios::binary) << it.value().get<std::string>();
+            }
+        }
+    }
+
     std::wstring err;
-    if (!session->Start(cmdLine, cwd, cols, rows, g_job, &err)) {
+    if (!session->Start(cmdLine, cwd, cols, rows, g_job, &err, extraEnv)) {
         error(err);
         return;
     }

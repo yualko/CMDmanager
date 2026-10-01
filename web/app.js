@@ -54,12 +54,13 @@ const state = {
     projectsRoot: '',
     restoreSessions: false,
     language: '',  // '' — как в Windows
+    accounts: [],  // [{ id, name }] — дополнительные аккаунты агентов
     checkUpdates: true,
   },
   openProjects: [], // проекты, открытые при последнем закрытии (для восстановления)
 };
 
-const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '', systemLanguage: 'ru' };
+const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '', systemLanguage: 'ru', dataDir: '' };
 
 const sessions = new Map();  // id -> Session
 let tabOrder = [];           // порядок вкладок (id сессий)
@@ -158,8 +159,8 @@ function remoteDirExpr(dir) {
 
 // Команда для сервера: перейти в папку, запустить команду и остаться в интерактивном шелле.
 // Запускаем через login+interactive шелл, чтобы подхватились PATH из ~/.profile и ~/.bashrc (туда ставится claude).
-function sshRemoteCommand(dir, command) {
-  const inner = `cd ${remoteDirExpr(dir)} 2>/dev/null || echo ${shQuote(t('Папка не найдена: {0}', dir || '~'))}; ` +
+function sshRemoteCommand(dir, command, account = null) {
+  const inner = `${remoteAccountPrefix(account)}cd ${remoteDirExpr(dir)} 2>/dev/null || echo ${shQuote(t('Папка не найдена: {0}', dir || '~'))}; ` +
     `${command ? `${command}; ` : ''}exec "$SHELL" -l`;
   return `exec "$SHELL" -lic ${shQuote(inner)}`;
 }
@@ -168,10 +169,10 @@ function sshCommonArgs(ssh) {
   return ['-p', String(ssh.port || 22), '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30'];
 }
 
-function sshConnectArgs(ssh, command) {
+function sshConnectArgs(ssh, command, account = null) {
   const args = ['-t', ...sshCommonArgs(ssh)];
   if (ssh.keyPath) args.push('-i', ssh.keyPath);
-  args.push('-l', ssh.user, ssh.host, sshRemoteCommand(ssh.dir, command));
+  args.push('-l', ssh.user, ssh.host, sshRemoteCommand(ssh.dir, command, account));
   return args;
 }
 
@@ -185,19 +186,20 @@ function sshLabel(ssh) {
 // yolo   — флаг «без подтверждений»; cont — продолжить прошлый разговор;
 // prompt — как передать начальное задание: 'arg' — аргументом, '--флаг' — через флаг,
 //          'type' — агент так не умеет, программа сама впишет текст в поле ввода после запуска;
-// rootEnv — без этого агент под root отказывается работать без подтверждений.
+// rootEnv — без этого агент под root отказывается работать без подтверждений;
+// homeEnv — переменная с папкой агента (вход, история, настройки): так работают отдельные аккаунты.
 // Команды и флаги можно переопределить в настройках («Команды агентов»).
 const AGENTS = [
-  { id: 'claude', name: 'Claude Code', short: 'Claude', cmd: 'claude', yolo: '--dangerously-skip-permissions', cont: '--continue', prompt: 'arg', rootEnv: 'IS_SANDBOX=1' },
-  { id: 'codex', name: 'Codex (ChatGPT)', short: 'Codex', cmd: 'codex', yolo: '--dangerously-bypass-approvals-and-sandbox', cont: 'resume --last', prompt: 'arg' },
-  { id: 'gemini', name: 'Gemini CLI', short: 'Gemini', cmd: 'gemini', yolo: '--yolo', cont: '--resume latest', prompt: '--prompt-interactive' },
-  { id: 'grok', name: 'Grok', short: 'Grok', cmd: 'grok', yolo: '--always-approve', cont: '--continue', prompt: 'arg' },
-  { id: 'kimi', name: 'Kimi Code', short: 'Kimi', cmd: 'kimi', yolo: '--yolo', cont: '--continue', prompt: 'type' },
+  { id: 'claude', name: 'Claude Code', short: 'Claude', cmd: 'claude', yolo: '--dangerously-skip-permissions', cont: '--continue', prompt: 'arg', rootEnv: 'IS_SANDBOX=1', homeEnv: 'CLAUDE_CONFIG_DIR' },
+  { id: 'codex', name: 'Codex (ChatGPT)', short: 'Codex', cmd: 'codex', yolo: '--dangerously-bypass-approvals-and-sandbox', cont: 'resume --last', prompt: 'arg', homeEnv: 'CODEX_HOME' },
+  { id: 'gemini', name: 'Gemini CLI', short: 'Gemini', cmd: 'gemini', yolo: '--yolo', cont: '--resume latest', prompt: '--prompt-interactive', homeEnv: 'GEMINI_CLI_HOME' },
+  { id: 'grok', name: 'Grok', short: 'Grok', cmd: 'grok', yolo: '--always-approve', cont: '--continue', prompt: 'arg', homeEnv: 'GROK_HOME' },
+  { id: 'kimi', name: 'Kimi Code', short: 'Kimi', cmd: 'kimi', yolo: '--yolo', cont: '--continue', prompt: 'type', homeEnv: 'KIMI_CODE_HOME' },
   { id: 'qwen', name: 'Qwen Code', short: 'Qwen', cmd: 'qwen', yolo: '--yolo', cont: '--continue', prompt: '--prompt-interactive' },
-  { id: 'copilot', name: 'GitHub Copilot CLI', short: 'Copilot', cmd: 'copilot', yolo: '--allow-all-tools', cont: '--continue', prompt: '--interactive' },
+  { id: 'copilot', name: 'GitHub Copilot CLI', short: 'Copilot', cmd: 'copilot', yolo: '--allow-all-tools', cont: '--continue', prompt: '--interactive', homeEnv: 'COPILOT_HOME' },
   { id: 'cursor', name: 'Cursor Agent', short: 'Cursor', cmd: 'cursor-agent', yolo: '--force', cont: 'resume', prompt: 'arg' },
-  { id: 'opencode', name: 'OpenCode', short: 'OpenCode', cmd: 'opencode', yolo: '--auto', cont: '--continue', prompt: '--prompt' },
-  { id: 'mimo', name: 'MiMo Code', short: 'MiMo', cmd: 'mimo', yolo: '--yolo', cont: '--continue', prompt: '--prompt' },
+  { id: 'opencode', name: 'OpenCode', short: 'OpenCode', cmd: 'opencode', yolo: '--auto', cont: '--continue', prompt: '--prompt', homeEnv: 'XDG_DATA_HOME' },
+  { id: 'mimo', name: 'MiMo Code', short: 'MiMo', cmd: 'mimo', yolo: '--yolo', cont: '--continue', prompt: '--prompt', homeEnv: 'MIMOCODE_HOME' },
   { id: 'aider', name: 'Aider', short: 'Aider', cmd: 'aider', yolo: '--yes-always', cont: '--restore-chat-history', prompt: 'type' },
 ];
 
@@ -321,6 +323,94 @@ function launchControls(launch, { target = 'local', user = '', available = null,
   };
 }
 
+// ---------- аккаунты ----------
+// Аккаунт — свой набор папок агентов (вход, история, настройки). '' — основной: обычные папки агентов.
+// Консоль проекта получает переменные для всех агентов сразу, так что и вручную набранный claude/codex
+// работает от аккаунта проекта.
+const accountList = () => state.settings.accounts || [];
+const accountExists = (id) => !!id && accountList().some((a) => a.id === id);
+
+function accountName(id) {
+  if (!id) return t('Основной');
+  return accountList().find((a) => a.id === id)?.name || t('Основной');
+}
+
+function accountRoot(id, remote = false) {
+  return remote ? `$HOME/.cmdmanager/accounts/${id}` : `${env.dataDir}\\accounts\\${id}`;
+}
+
+// Переменные окружения, папки и файлы аккаунта. remote — для запуска на сервере (пути через $HOME).
+function accountSetup(id, { remote = false } = {}) {
+  if (!accountExists(id)) return null;
+  const sep = remote ? '/' : '\\';
+  const root = accountRoot(id, remote);
+  const vars = {};
+  const dirs = [];
+  for (const a of AGENTS) {
+    if (!a.homeEnv) continue;
+    const dir = `${root}${sep}${a.id}`;
+    vars[a.homeEnv] = dir;
+    dirs.push(dir);
+  }
+  // Codex по умолчанию кладёт вход в хранилище Windows — общее для всех аккаунтов. Просим хранить в файле.
+  const files = { [`${root}${sep}codex${sep}config.toml`]: 'cli_auth_credentials_store = "file"\n' };
+  return { id, env: vars, dirs, files };
+}
+
+// Подготовка аккаунта на сервере: папки, настройка Codex и переменные — перед запуском агента.
+function remoteAccountPrefix(setup) {
+  if (!setup) return '';
+  const q = (path) => `"${path}"`;
+  const cfg = Object.keys(setup.files)[0];
+  return `mkdir -p ${setup.dirs.map(q).join(' ')} 2>/dev/null; ` +
+    `[ -f ${q(cfg)} ] || printf '%s\\n' ${shQuote(setup.files[cfg].trim())} > ${q(cfg)}; ` +
+    `export ${Object.entries(setup.env).map(([k, v]) => `${k}=${q(v)}`).join(' ')}; `;
+}
+
+function newAccountId() { return `acc${uid().replace(/[^a-z0-9]/g, '')}`; }
+
+function createAccountDialog(onCreated) {
+  openModal((modal, close) => {
+    const name = el('input', { type: 'text', placeholder: t('Например: Рабочий'), autofocus: true, spellcheck: 'false' });
+    const form = el('form', { onsubmit: (e) => {
+      e.preventDefault();
+      const title = name.value.trim();
+      if (!title) { name.focus(); return; }
+      const acc = { id: newAccountId(), name: title };
+      state.settings.accounts = [...accountList(), acc];
+      saveState();
+      close();
+      onCreated?.(acc);
+    } },
+      el('div', { class: 'field' }, el('label', {}, 'Название аккаунта'), name,
+        el('div', { class: 'hint' }, 'При первом запуске в этом аккаунте агент попросит войти — вход сохранится для следующих сессий.')),
+      el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'),
+        el('button', { type: 'submit', class: 'btn primary' }, 'Создать')));
+    modal.append(el('h2', {}, 'Новый аккаунт'), form);
+  });
+}
+
+// Поле «Аккаунт» для диалогов проекта.
+function accountControl(current = '') {
+  const select = el('select', {});
+  const fill = (selected) => {
+    select.replaceChildren(
+      el('option', { value: '', selected: !selected }, t('Основной')),
+      ...accountList().map((a) => el('option', { value: a.id, selected: a.id === selected }, a.name)),
+      el('option', { value: '__new' }, t('Новый аккаунт…')));
+  };
+  let value = accountExists(current) ? current : '';
+  fill(value);
+  select.addEventListener('change', () => {
+    if (select.value !== '__new') { value = select.value; return; }
+    select.value = value;
+    createAccountDialog((acc) => { value = acc.id; fill(value); });
+  });
+  const node = el('div', { class: 'field' }, el('label', {}, 'Аккаунт'), select,
+    el('div', { class: 'hint' }, 'Отдельный вход агентов (Claude, Codex, Gemini, Grok, Kimi, OpenCode, MiMo, Copilot). Qwen, Cursor и Aider используют общий вход.'));
+  return { node, read: () => value };
+}
+
 // ---------- агент на этом компьютере, работа с сервером через ssh ----------
 function sshKeyRef(keyPath) {
   // ~/.ssh/<ключ> одинаково понимают ssh и оболочки агентов, а в тексте задания не нужны кавычки.
@@ -406,11 +496,12 @@ async function detectRemoteAgents(ctx) {
 }
 
 class Session {
-  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '' }) {
+  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '', account = null }) {
     this.id = nextSessionId++;
     this.cwd = cwd || path;  // для «агент локально» path — адрес на сервере, а запускаемся в локальной папке
     this.agent = agent;            // короткое имя агента для меток (null — консоль без агента)
     this.typePrompt = typePrompt;  // задание, которое агент не принимает при запуске — впишем его сами
+    this.account = account;        // accountSetup(): переменные и папки аккаунта (null — основной)
     this.pendingPrompt = '';
     this.promptTimer = null;
     this.startedAt = 0;
@@ -473,9 +564,10 @@ class Session {
     this.fitNow();
     const base = { type: 'spawn', id: this.id, cols: this.cols || 120, rows: this.rows || 30 };
     if (!this.ssh) {
-      native.send({ ...base, cwd: this.cwd, shell: state.settings.shell, command: this.command });
+      native.send({ ...base, cwd: this.cwd, shell: state.settings.shell, command: this.command,
+        env: this.account?.env, ensureDirs: this.account?.dirs, files: this.account?.files });
     } else {
-      native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command) });
+      native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command, this.account) });
     }
   }
 
@@ -916,7 +1008,8 @@ function fillPane(pane, id) {
 
   header.replaceChildren(
     el('span', { class: `dot ${dotClass(s)}`, title: dotTitle(s) }),
-    el('div', { class: 'pane-title', title: s.path }, el('b', {}, sessionLabel(s)), s.agent ? el('i', { class: 'tag agent' }, s.agent) : null, el('span', {}, s.title || s.path)),
+    el('div', { class: 'pane-title', title: s.path }, el('b', {}, sessionLabel(s)), s.agent ? el('i', { class: 'tag agent' }, s.agent) : null,
+      s.account ? el('i', { class: 'tag account', title: t('Аккаунт') }, accountName(s.account.id)) : null, el('span', {}, s.title || s.path)),
     el('button', { class: 'icon-btn small', title: zoomedId ? 'Вернуть сетку' : 'Развернуть (двойной клик по заголовку)', onclick: () => toggleZoom(s.id) }, icon(ICONS.expand)),
     el('button', { class: 'icon-btn small', title: 'Перезапустить', onclick: () => s.restart() }, icon(ICONS.restart)),
     el('button', { class: 'icon-btn small', title: 'Закрыть консоль', onclick: () => closeSession(s.id) }, icon(ICONS.close)),
@@ -975,6 +1068,7 @@ function renderProjects() {
         p.claudeAt === 'local' ? 'SSH · локально' : 'SSH') : null,
       launchAgentShort(p.launch || state.settings.defaultLaunch) ? el('span', { class: 'tag agent', title: 'ИИ-агент проекта' }, launchAgentShort(p.launch || state.settings.defaultLaunch))
         : normalizeLaunch(p.launch || state.settings.defaultLaunch).mode === 'shell' ? el('span', { class: 'tag console', title: 'Только консоль, без ИИ-агента' }, 'Консоль') : null,
+      accountExists(p.account) ? el('span', { class: 'tag account', title: t('Аккаунт') }, accountName(p.account)) : null,
       attention ? el('span', { class: 'dot attention', title: 'Агент ждёт' }) : null),
     el('div', {},
       open.length ? el('span', { class: 'open-count', title: 'Открытых консолей' }, open.length) : null,
@@ -1048,7 +1142,9 @@ async function openProject(p, { forceNew = false, plain = false, agent = null } 
   } else if (!plain) {
     built = p.ssh ? buildLaunch(launch, { shell: 'sh', root: p.ssh.user === 'root' }) : buildLaunch(launch, { shell: 'ps' });
   }
-  addSession({ projectId: p.id, name: p.name, path: p.path, cwd, command: built.command, typePrompt: built.typePrompt, ssh,
+  // Аккаунт: на сервере — папки на сервере, иначе — локальные.
+  const account = accountSetup(p.account, { remote: !!ssh });
+  addSession({ projectId: p.id, name: p.name, path: p.path, cwd, command: built.command, typePrompt: built.typePrompt, ssh, account,
     agent: plain ? null : launchAgentShort(launch) });
   saveState();
 }
@@ -1183,6 +1279,7 @@ function createProjectDialog() {
     const error = el('div', { class: 'modal-error' });
     const launch = el('input', { type: 'checkbox', checked: true });
     const agentCtl = launchControls(defaultLaunch(), { target: 'local', available: localAgents });
+    const accountCtl = accountControl('');
     const submit = el('button', { type: 'submit', class: 'btn primary' }, 'Создать и запустить');
 
     const update = () => {
@@ -1215,6 +1312,7 @@ function createProjectDialog() {
       const p = existing || addProject(displayName || folderName, r.path);
       if (existing && displayName) p.name = displayName;
       p.launch = agentCtl.read();
+      p.account = accountCtl.read();
       close();
       if (r.existed) toast('Папка уже существовала — добавлена как проект');
       if (launch.checked) openProject(p, { forceNew: true }); else renderProjects();
@@ -1224,6 +1322,7 @@ function createProjectDialog() {
       el('div', { class: 'field' }, el('label', {}, 'Имя папки'), folder),
       el('div', { class: 'field' }, el('label', {}, 'Где создать'), el('div', { class: 'row' }, parent, browse), preview),
       agentCtl.node,
+      accountCtl.node,
       el('label', { class: 'check' }, launch, 'Сразу открыть консоль и запустить агента'),
       error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), submit));
@@ -1408,6 +1507,7 @@ function sshFolderStep(modal, close, ctx) {
   });
   // Какие агенты стоят на сервере — подсказка в списке агентов.
   detectRemoteAgents(ctx).then((set) => { if (set) placement.setRemoteAgents(set); });
+  const accountCtl = accountControl('');
   const error = el('div', { class: 'modal-error' });
 
   const form = el('form', { onsubmit: async (e) => {
@@ -1425,6 +1525,7 @@ function sshFolderStep(modal, close, ctx) {
     p.localDir = pl.localDir;
     p.prompt = pl.prompt;
     p.launch = pl.launch;
+    p.account = accountCtl.read();
     close();
     openProject(p, { forceNew: true });
     saveState();
@@ -1432,6 +1533,7 @@ function sshFolderStep(modal, close, ctx) {
     browser.node,
     el('div', { class: 'field' }, el('label', {}, 'Название проекта'), name),
     placement.node,
+    accountCtl.node,
     error,
     el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'),
       el('button', { type: 'submit', class: 'btn primary' }, 'Открыть здесь')));
@@ -1502,15 +1604,18 @@ async function openLocalFolderFlow() {
   openModal((modal, close) => {
     const name = el('input', { type: 'text', value: baseName(r.path), autofocus: true, spellcheck: 'false' });
     const agentCtl = launchControls(defaultLaunch(), { target: 'local', available: localAgents });
+    const accountCtl = accountControl('');
     const form = el('form', { onsubmit: (e) => {
       e.preventDefault();
       const p = addProject(name.value.trim() || baseName(r.path), r.path);
       p.launch = agentCtl.read();
+      p.account = accountCtl.read();
       close();
       openProject(p);
     } },
       el('div', { class: 'field' }, el('label', {}, 'Название проекта'), name, el('div', { class: 'preview-path' }, r.path)),
       agentCtl.node,
+      accountCtl.node,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Открыть')));
     modal.append(el('h2', {}, 'Открыть проект'), form);
     requestAnimationFrame(() => name.select());
@@ -1523,6 +1628,7 @@ function editProjectDialog(p) {
     const name = el('input', { type: 'text', value: p.name, autofocus: true, spellcheck: 'false' });
     const path = el('input', { type: 'text', class: 'mono', value: p.path, spellcheck: 'false' });
     const agentCtl = launchControls(p.launch || defaultLaunch(), { target: 'local', available: localAgents });
+    const accountCtl = accountControl(p.account);
     const error = el('div', { class: 'modal-error' });
     const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
       const r = await native.request('pickFolder', { title: t('Папка проекта'), initial: path.value });
@@ -1536,6 +1642,7 @@ function editProjectDialog(p) {
       p.name = name.value.trim() || baseName(newPath);
       p.path = newPath;
       p.launch = agentCtl.read();
+      p.account = accountCtl.read();
       delete p.command;
       for (const s of projectSessions(p)) s.name = p.name;
       close();
@@ -1546,6 +1653,7 @@ function editProjectDialog(p) {
       el('div', { class: 'field' }, el('label', {}, 'Название'), name),
       el('div', { class: 'field' }, el('label', {}, 'Папка'), el('div', { class: 'row' }, path, browse)),
       agentCtl.node,
+      accountCtl.node,
       error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Сохранить')));
     modal.append(el('h2', {}, 'Проект'), form);
@@ -1566,6 +1674,7 @@ function editSshProjectDialog(p) {
       launch: p.launch || defaultLaunch(), getSsh: currentSsh, getName: () => name.value.trim(),
     });
     if (p.ssh.keyPath) detectRemoteAgents({ ...sshTarget(p.ssh), keyPath: p.ssh.keyPath }).then((set) => { if (set) placement.setRemoteAgents(set); });
+    const accountCtl = accountControl(p.account);
     for (const input of [host, port, user, dir, name]) input.addEventListener('input', () => placement.refresh());
     const error = el('div', { class: 'modal-error' });
     const sameServer = () => host.value.trim() === p.ssh.host && user.value.trim() === p.ssh.user && (Number(port.value) || 22) === (Number(p.ssh.port) || 22);
@@ -1598,6 +1707,7 @@ function editSshProjectDialog(p) {
       p.localDir = pl.localDir;
       p.prompt = pl.prompt;
       p.launch = pl.launch;
+      p.account = accountCtl.read();
       for (const s of projectSessions(p)) s.name = p.name;
       close();
       renderAll();
@@ -1608,6 +1718,7 @@ function editSshProjectDialog(p) {
       el('div', { class: 'field' }, el('label', {}, 'Пользователь'), user),
       el('div', { class: 'field' }, el('label', {}, 'Папка на сервере'), el('div', { class: 'row' }, dir, browse)),
       placement.node,
+      accountCtl.node,
       el('div', { class: 'hint' }, `Ключ: ${p.ssh.keyPath || 'будет подготовлен при подключении'}`),
       error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Сохранить')));
@@ -1624,6 +1735,33 @@ function settingsDialog() {
       sh === 'pwsh.exe' ? `PowerShell 7 (pwsh.exe)${env.hasPwsh ? '' : ` — ${t('не установлен')}`}` : 'Windows PowerShell (powershell.exe)')));
     if (!shells.includes(st.shell)) shell.append(el('option', { value: st.shell, selected: true }, st.shell));
     const agentCtl = launchControls(defaultLaunch(), { target: 'local', available: localAgents, title: 'ИИ-агент для новых проектов' });
+    // Аккаунты: правка названий, удаление, папка. Изменения применяются при «Сохранить».
+    let accounts = accountList().map((a) => ({ ...a }));
+    const accountsBox = el('div', { class: 'accounts' });
+    const renderAccounts = () => accountsBox.replaceChildren(
+      el('div', { class: 'account-row main' }, el('span', {}, t('Основной')), el('span', { class: 'hint' }, t('обычные папки агентов'))),
+      ...accounts.map((a) => {
+        const name = el('input', { type: 'text', value: a.name, spellcheck: 'false', oninput: (e) => { a.name = e.target.value; } });
+        const used = state.projects.filter((p) => p.account === a.id).length;
+        return el('div', { class: 'account-row' }, name,
+          el('span', { class: 'hint' }, t('проектов: {0}', used)),
+          el('button', { type: 'button', class: 'icon-btn small', title: t('Открыть папку аккаунта'),
+            onclick: () => native.send({ type: 'openFolder', path: accountRoot(a.id) }) }, icon(ICONS.folder)),
+          el('button', { type: 'button', class: 'icon-btn small', title: t('Удалить аккаунт'), onclick: async () => {
+            const ok = await confirmDialog({
+              title: t('Удалить аккаунт «{0}»?', a.name),
+              text: t('Проекты этого аккаунта перейдут на основной. Папка с входом останется на диске: {0}', accountRoot(a.id)),
+              okText: t('Удалить'), danger: true,
+            });
+            if (ok) { accounts = accounts.filter((x) => x !== a); renderAccounts(); }
+          } }, icon(ICONS.trash)));
+      }),
+      el('button', { type: 'button', class: 'btn ghost', onclick: () => {
+        accounts.push({ id: newAccountId(), name: t('Новый аккаунт') });
+        renderAccounts();
+        accountsBox.querySelector('.account-row:last-of-type input')?.select();
+      } }, icon(ICONS.plus), t('Добавить аккаунт')));
+    renderAccounts();
     // Свои команды и флаги агентов (на случай, если у агента другая версия или он назван иначе).
     const overrideInputs = {};
     const overrides = el('details', { class: 'agent-overrides' }, el('summary', {}, 'Команды агентов'),
@@ -1663,6 +1801,8 @@ function settingsDialog() {
       detectLocalAgents().then(renderProjects);
       st.projectsRoot = root.value.trim();
       st.restoreSessions = restore.checked;
+      st.accounts = accounts.map((a) => ({ id: a.id, name: a.name.trim() || t('Без названия') }));
+      for (const p of state.projects) if (p.account && !accountExists(p.account)) p.account = '';
       if (language.value !== (st.language || '')) setLanguage(language.value);
       st.checkUpdates = checkUpdates.checked;
       const fs = Math.min(32, Math.max(8, Number(fontSize.value) || 14));
@@ -1674,6 +1814,8 @@ function settingsDialog() {
       el('div', { class: 'field' }, el('label', {}, 'Оболочка'), shell),
       agentCtl.node,
       overrides,
+      el('div', { class: 'field' }, el('label', {}, 'Аккаунты'), accountsBox,
+        el('div', { class: 'hint' }, 'У каждого аккаунта свой вход агентов, история и настройки. Аккаунт выбирается в настройках проекта.')),
       el('div', { class: 'field' }, el('label', {}, 'Папка для новых проектов'), el('div', { class: 'row' }, root, browse)),
       el('div', { class: 'field' }, el('label', {}, 'Размер шрифта консоли'), fontSize),
       el('label', { class: 'check' }, restore, 'При запуске снова открывать проекты из прошлого сеанса'),
@@ -1824,7 +1966,7 @@ $('#welcome').addEventListener('click', (e) => {
 setInterval(renderProjects, 60_000);  // обновить «N мин назад»
 
 native.on('init', async (m) => {
-  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '', systemLanguage: m.systemLanguage || 'ru' });
+  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '', systemLanguage: m.systemLanguage || 'ru', dataDir: m.dataDir || '' });
   const saved = m.state;
   if (saved && typeof saved === 'object') {
     if (Array.isArray(saved.projects)) state.projects = saved.projects.filter((p) => p && p.path);

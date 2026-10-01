@@ -1,5 +1,7 @@
 #include "pty_session.h"
 
+#include <algorithm>
+#include <map>
 #include <vector>
 
 namespace {
@@ -17,6 +19,28 @@ size_t IncompleteUtf8Tail(const std::string& s) {
         return need > back ? back : 0;
     }
     return 0;
+}
+
+// Блок окружения для CreateProcessW: текущее окружение, поверх него extra (имена без учёта регистра).
+std::wstring BuildEnvironmentBlock(const std::vector<std::pair<std::wstring, std::wstring>>& extra) {
+    auto upper = [](std::wstring s) {
+        std::transform(s.begin(), s.end(), s.begin(), towupper);
+        return s;
+    };
+    std::map<std::wstring, std::wstring> vars;  // ключ в верхнем регистре → «ИМЯ=значение»
+    if (LPWCH cur = GetEnvironmentStringsW()) {
+        for (LPWCH p = cur; *p; p += wcslen(p) + 1) {
+            std::wstring entry = p;
+            size_t eq = entry.find(L'=', 1);  // у служебных переменных вида «=C:» имя начинается с «=»
+            if (eq != std::wstring::npos) vars[upper(entry.substr(0, eq))] = entry;
+        }
+        FreeEnvironmentStringsW(cur);
+    }
+    for (const auto& [name, value] : extra) vars[upper(name)] = name + L"=" + value;
+    std::wstring block;
+    for (const auto& [key, entry] : vars) block.append(entry).push_back(L'\0');
+    block.push_back(L'\0');
+    return block;
 }
 
 }  // namespace
@@ -39,7 +63,7 @@ PtySession::~PtySession() {
 }
 
 bool PtySession::Start(const std::wstring& commandLine, const std::wstring& cwd, short cols, short rows, HANDLE job,
-                       std::wstring* error) {
+                       std::wstring* error, const std::vector<std::pair<std::wstring, std::wstring>>& extraEnv) {
     auto fail = [&](const wchar_t* what) {
         if (error) *error = std::wstring(what) + L" (код " + std::to_wstring(GetLastError()) + L")";
         return false;
@@ -79,9 +103,11 @@ bool PtySession::Start(const std::wstring& commandLine, const std::wstring& cwd,
     si.lpAttributeList = attrs;
 
     std::wstring cmd = commandLine;  // CreateProcessW может модифицировать буфер
+    std::wstring envBlock = extraEnv.empty() ? std::wstring() : BuildEnvironmentBlock(extraEnv);
     PROCESS_INFORMATION pi{};
     BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, nullptr,
+                             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+                             envBlock.empty() ? nullptr : envBlock.data(),
                              cwd.empty() ? nullptr : cwd.c_str(), &si.StartupInfo, &pi);
     DeleteProcThreadAttributeList(attrs);
     if (!ok) return fail(L"Не удалось запустить процесс");

@@ -394,3 +394,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 :root:lang(ja) .section-title, :root:lang(zh) .section-title { letter-spacing: 0; }
 .chip svg { width: 13px; height: 13px; flex: none; }
 .chip { white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- аккаунты ---------- */
+.tag.account { background: rgba(196, 127, 213, .16); color: #d99ce8; }
+.accounts { display: grid; gap: 6px; }
+.account-row { display: flex; align-items: center; gap: 8px; }
+.account-row input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.account-row.main { height: 30px; padding: 0 9px; border: 1px dashed var(--border); border-radius: 6px; }
+.account-row.main span:first-child { flex: 1; }
+.accounts .btn.ghost { justify-content: flex-start; height: 30px; }

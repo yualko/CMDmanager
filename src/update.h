@@ -23,5 +23,9 @@ UpdateInfo CheckForUpdate();
 bool DownloadUpdate(const UpdateInfo& info, std::wstring* path, std::string* error,
                     const std::function<void(uint64_t, uint64_t)>& progress);
 
+// Произвольный HTTP(S)-запрос (для серверов моделей). Возвращает false только при сетевой ошибке.
+bool HttpRequest(const std::string& method, const std::string& url, const std::string& body, std::string* response,
+                 DWORD* status, std::string* error, DWORD timeoutMs);
+
 // Сравнение версий вида "1.2.0" / "v1.2.0": <0, 0, >0.
 int CompareVersions(const std::string& a, const std::string& b);

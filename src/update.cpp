@@ -112,6 +112,53 @@ std::vector<int> ParseVersion(std::string v) {
 
 }  // namespace
 
+bool HttpRequest(const std::string& method, const std::string& url, const std::string& body, std::string* response,
+                 DWORD* status, std::string* error, DWORD timeoutMs) {
+    auto fail = [&](const char* what) {
+        *error = std::string(what) + " (" + std::to_string(GetLastError()) + ")";
+        return false;
+    };
+    std::wstring wurl = Widen(url);
+    URL_COMPONENTS uc{sizeof(uc)};
+    wchar_t host[256] = {}, path[2048] = {}, extra[2048] = {};
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = static_cast<DWORD>(std::size(host));
+    uc.lpszUrlPath = path;
+    uc.dwUrlPathLength = static_cast<DWORD>(std::size(path));
+    uc.lpszExtraInfo = extra;
+    uc.dwExtraInfoLength = static_cast<DWORD>(std::size(extra));
+    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) return fail("Invalid URL");
+    const bool secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
+
+    Handle session{WinHttpOpen(L"CMDManager/" CMDM_VERSION_WSTR, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                               WINHTTP_NO_PROXY_BYPASS, 0)};
+    if (!session.h) return fail("WinHttpOpen");
+    WinHttpSetTimeouts(session.h, 5000, 5000, static_cast<int>(timeoutMs), static_cast<int>(timeoutMs));
+    Handle connect{WinHttpConnect(session.h, host, uc.nPort, 0)};
+    if (!connect.h) return fail("Connect");
+    std::wstring object = std::wstring(path) + extra;
+    Handle request{WinHttpOpenRequest(connect.h, Widen(method).c_str(), object.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0)};
+    if (!request.h) return fail("OpenRequest");
+    const wchar_t* headers = L"Content-Type: application/json\r\nAccept: application/json";
+    if (!WinHttpSendRequest(request.h, headers, static_cast<DWORD>(-1),
+                            body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(body.data()),
+                            static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) ||
+        !WinHttpReceiveResponse(request.h, nullptr))
+        return fail("No connection");
+    DWORD size = sizeof(*status);
+    WinHttpQueryHeaders(request.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        status, &size, WINHTTP_NO_HEADER_INDEX);
+    char buf[16 * 1024];
+    for (;;) {
+        DWORD n = 0;
+        if (!WinHttpReadData(request.h, buf, sizeof(buf), &n)) return fail("Read");
+        if (n == 0) break;
+        response->append(buf, n);
+    }
+    return true;
+}
+
 int CompareVersions(const std::string& a, const std::string& b) {
     auto pa = ParseVersion(a), pb = ParseVersion(b);
     for (size_t i = 0; i < std::max(pa.size(), pb.size()); ++i) {

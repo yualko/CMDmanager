@@ -23,6 +23,7 @@
 #include "pty_session.h"
 #include "i18n.h"
 #include "installer.h"
+#include "mcp_hub.h"
 #include "ssh_tools.h"
 #include "update.h"
 #include "version.h"
@@ -38,6 +39,7 @@ constexpr UINT WM_APP_OUTPUT = WM_APP + 1;  // wParam = id сессии
 constexpr UINT WM_APP_EXIT = WM_APP + 2;    // wParam = id сессии
 constexpr UINT WM_APP_WEBMSG = WM_APP + 3;  // разобрать очередь сообщений из JS
 constexpr UINT WM_APP_POST = WM_APP + 4;    // lParam = std::string* с JSON для страницы (из фоновых потоков)
+constexpr UINT WM_APP_MCP = WM_APP + 6;           // lParam = std::string* — сообщение MCP-моста (см. mcp_hub.h)
 constexpr UINT WM_APP_UPDATE_READY = WM_APP + 5;  // lParam = std::wstring* — путь к скачанному установщику
 
 constexpr wchar_t kWindowClass[] = L"CMDManagerWindow";
@@ -222,14 +224,15 @@ void Reply(const json& req, json payload) {
 
 // ---------- сессии ----------
 
-std::wstring BuildCommandLine(const std::string& shell, const std::string& command) {
+// keepShell — после завершения команды оставить оболочку открытой (-NoExit).
+std::wstring BuildCommandLine(const std::string& shell, const std::string& command, bool keepShell) {
     std::wstring sh = Utf8ToWide(shell.empty() ? std::string("powershell.exe") : shell);
     std::wstring cl = L"\"" + sh + L"\" -NoLogo";
     if (!command.empty()) {
         // -EncodedCommand (base64 от UTF-16LE) избавляет от проблем с кавычками в команде.
         std::wstring wcmd = Utf8ToWide(command);
         std::string bytes(reinterpret_cast<const char*>(wcmd.data()), wcmd.size() * sizeof(wchar_t));
-        cl += L" -NoExit -EncodedCommand " + Utf8ToWide(Base64(bytes));
+        cl += std::wstring(keepShell ? L" -NoExit" : L"") + L" -EncodedCommand " + Utf8ToWide(Base64(bytes));
     }
     return cl;
 }
@@ -268,7 +271,7 @@ void SpawnSession(const json& m) {
         error(L"Неизвестная программа: " + Utf8ToWide(program));
         return;
     } else {
-        cmdLine = BuildCommandLine(m.value("shell", std::string()), m.value("command", std::string()));
+        cmdLine = BuildCommandLine(m.value("shell", std::string()), m.value("command", std::string()), m.value("keepShell", true));
     }
     // Аккаунт: свои папки агентов через переменные окружения. Папки создаём заранее,
     // файлы (например, настройку Codex «хранить вход в файле») пишем, только если их ещё нет.
@@ -279,6 +282,16 @@ void SpawnSession(const json& m) {
     for (const auto& d : m.value("ensureDirs", json::array())) {
         std::error_code dirEc;
         if (d.is_string()) fs::create_directories(fs::path(Utf8ToWide(d.get<std::string>())), dirEc);
+    }
+    if (m.contains("writeFiles") && m["writeFiles"].is_object()) {
+        for (auto it = m["writeFiles"].begin(); it != m["writeFiles"].end(); ++it) {
+            const fs::path file = Utf8ToWide(it.key());
+            std::error_code fileEc;
+            if (it.value().is_string() && file.is_absolute()) {
+                fs::create_directories(file.parent_path(), fileEc);
+                std::ofstream(file, std::ios::binary | std::ios::trunc) << it.value().get<std::string>();
+            }
+        }
     }
     if (m.contains("files") && m["files"].is_object()) {
         for (auto it = m["files"].begin(); it != m["files"].end(); ++it) {
@@ -442,6 +455,9 @@ void HandleWebMessage(const std::string& text) {
                    {"osBuild", WindowsBuildNumber()},
                    {"version", CMDM_VERSION_STR},
                    {"systemLanguage", I18nSystemLanguage()},
+                   {"mcpAddr", McpHubAddress()},
+                   {"mcpSecret", McpHubSecret()},
+                   {"exePath", [] { wchar_t b[MAX_PATH * 2]; DWORD n = GetModuleFileNameW(nullptr, b, MAX_PATH * 2); return WideToUtf8(std::wstring(b, n)); }()},
                    {"installed", fs::path(InstalledExePath()) == fs::path(ExeDir() / L"CMDManager.exe")},
                    {"hasSsh", OpenSshAvailable()},
                    {"dataDir", PathToUtf8(g_dataDir)}});
@@ -550,6 +566,21 @@ void HandleWebMessage(const std::string& text) {
             }
             post({{"type", "updateError"}, {"message", error}});
             PostMessageW(g_hwnd, WM_APP_UPDATE_READY, 0, 0);  // сброс флага
+        }).detach();
+    } else if (type == "mcpReply") {
+        McpHubSend(m.value("conn", 0), m["msg"].dump(-1, ' ', false, json::error_handler_t::replace));
+    } else if (type == "http") {
+        // Запрос к серверу модели (http://… страница сама сделать не может: она открыта по https).
+        std::thread([m] {
+            std::string response, error;
+            DWORD status = 0;
+            const bool ok = HttpRequest(m.value("method", std::string("GET")), m.value("url", std::string()),
+                                        m.value("body", std::string()), &response, &status, &error,
+                                        static_cast<DWORD>(m.value("timeoutMs", 30000)));
+            json r = {{"type", "reply"}, {"reqId", m.value("reqId", 0)}, {"status", status}, {"body", response}};
+            if (!ok) r["error"] = error;
+            auto* text = new std::string(r.dump(-1, ' ', false, json::error_handler_t::replace));
+            if (!PostMessageW(g_hwnd, WM_APP_POST, 0, reinterpret_cast<LPARAM>(text))) delete text;
         }).detach();
     } else if (type == "setLanguage") {
         I18nSetLanguage(m.value("lang", std::string()));
@@ -744,6 +775,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_APP_MCP:
         case WM_APP_POST: {
             std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
             if (g_webview) g_webview->PostWebMessageAsJson(Utf8ToWide(*text).c_str());
@@ -825,6 +857,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     // Запуск в роли SSH_ASKPASS (ssh просит пароль при установке ключа) — ответить и выйти, окно не создаём.
     if (int code = 0; RunAsAskpassIfRequested(&code)) return code;
+    // Запуск агентом как MCP-сервер (связь консолей команды) — без окна.
+    if (int code = 0; RunMcpBridgeIfRequested(&code)) return code;
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
@@ -906,6 +940,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     ShowWindow(g_hwnd, show == SW_SHOWDEFAULT ? nCmdShow : show);
     UpdateWindow(g_hwnd);
 
+    McpHubStart(g_hwnd, WM_APP_MCP);
     CreateWebView();
 
     MSG msg;

@@ -55,12 +55,13 @@ const state = {
     restoreSessions: false,
     language: '',  // '' — как в Windows
     accounts: [],  // [{ id, name }] — дополнительные аккаунты агентов
+    modelServers: [],  // [{ id, name, url, apiKey, models }] — свои LLM-серверы
     checkUpdates: true,
   },
   openProjects: [], // проекты, открытые при последнем закрытии (для восстановления)
 };
 
-const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '', systemLanguage: 'ru', dataDir: '' };
+const env = { home: '', hasPwsh: false, osBuild: 0, hasSsh: false, version: '', systemLanguage: 'ru', dataDir: '', mcpAddr: '', mcpSecret: '', exePath: '' };
 
 const sessions = new Map();  // id -> Session
 let tabOrder = [];           // порядок вкладок (id сессий)
@@ -219,7 +220,7 @@ function agentDef(id) {
 
 // Приводит описание запуска к текущему формату (в том числе старые проекты «только Claude»).
 function normalizeLaunch(launch) {
-  const l = { agent: 'claude', mode: 'skip', custom: '', cont: false, ...(launch || {}) };
+  const l = { agent: 'claude', mode: 'skip', custom: '', cont: false, server: '', model: '', ...(launch || {}) };
   if (l.mode === 'sandbox') l.mode = 'skip';  // раньше был отдельный вариант «под root»; теперь IS_SANDBOX ставится сам
   if (!LAUNCH_MODES.some((m) => m.id === l.mode)) l.mode = 'skip';
   if (!AGENTS.some((a) => a.id === l.agent)) l.agent = 'claude';
@@ -234,13 +235,14 @@ const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
 // Команда запуска агента. shell: 'ps' — локальный PowerShell, 'sh' — оболочка на сервере.
 // Возвращает { command, typePrompt }: typePrompt нужно вписать в агента после запуска.
-function buildLaunch(launch, { shell = 'ps', root = false, prompt = '' } = {}) {
+// extraArgs — уже экранированные аргументы сразу после команды агента (например, подключение MCP).
+function buildLaunch(launch, { shell = 'ps', root = false, prompt = '', extraArgs = [] } = {}) {
   const l = normalizeLaunch(launch);
   if (l.mode === 'shell') return { command: '', typePrompt: '' };
   if (l.mode === 'custom') return { command: (l.custom || '').trim(), typePrompt: '' };
   const a = agentDef(l.agent);
   const q = shell === 'sh' ? shQuote : psQuote;
-  const parts = [a.cmd];
+  const parts = [a.cmd, ...extraArgs];
   if (l.cont && a.cont) parts.push(a.cont);
   if (l.mode === 'skip' && a.yolo) parts.push(a.yolo);
   let typePrompt = '';
@@ -283,6 +285,16 @@ function launchControls(launch, { target = 'local', user = '', available = null,
   const contLabel = el('label', { class: 'check' }, cont, contText);
   const hint = el('div', { class: 'hint' });
   const preview = el('div', { class: 'preview-path' });
+  // Модель: облако (своя модель агента) или модель с вашего сервера (только для агентов, которые это умеют).
+  const modelSel = el('select', { title: t('Модель') });
+  let modelValue = l.server ? `${l.server}|${l.model}` : '';
+  const fillModels = () => {
+    const opts = [el('option', { value: '' }, t('Облако'))];
+    for (const srv of modelServers()) for (const m of srv.models || []) opts.push(el('option', { value: `${srv.id}|${m}` }, `${m} @ ${srv.name}`));
+    modelSel.replaceChildren(...opts);
+    modelSel.value = [...modelSel.options].some((o) => o.value === modelValue) ? modelValue : '';
+  };
+  modelSel.addEventListener('change', () => { modelValue = modelSel.value; update(); });
 
   function fillAgents(selected) {
     agentSel.replaceChildren(...AGENTS.map((a) => {
@@ -290,7 +302,10 @@ function launchControls(launch, { target = 'local', user = '', available = null,
       return el('option', { value: a.id, selected: a.id === selected }, `${a.name}${missing ? ` — ${t('не найден')}` : ''}`);
     }));
   }
-  const read = () => ({ agent: agentSel.value, mode: modeSel.value, custom: custom.value.trim(), cont: cont.checked });
+  const read = () => {
+    const [server, model] = modelSel.hidden ? ['', ''] : (modelSel.value || '|').split('|');
+    return { agent: agentSel.value, mode: modeSel.value, custom: custom.value.trim(), cont: cont.checked, server, model };
+  };
   function update() {
     const r = read();
     const a = agentDef(r.agent);
@@ -306,16 +321,19 @@ function launchControls(launch, { target = 'local', user = '', available = null,
     hint.textContent = !missing ? '' : target === 'remote'
       ? t('{0} не найден на сервере — команда «{1}» может не запуститься.', a.name, a.cmd)
       : t('{0} не найден на этом компьютере — команда «{1}» может не запуститься.', a.name, a.cmd);
+    modelSel.hidden = !agentMode || target === 'remote' || !LOCAL_MODEL_AGENTS.has(r.agent) || !modelServers().some((x) => x.models?.length);
     const { command } = buildLaunch(r, { shell: target === 'remote' ? 'sh' : 'ps', root: target === 'remote' && user === 'root' });
-    preview.textContent = command ? `${target === 'remote' ? '$' : '>'} ${command}` : 'Откроется только консоль';
+    const onModel = !modelSel.hidden && modelSel.value ? `   [${t('модель')}: ${modelLabel(read())}]` : '';
+    preview.textContent = command ? `${target === 'remote' ? '$' : '>'} ${command}${onModel}` : 'Откроется только консоль';
   }
   fillAgents(l.agent);
+  fillModels();
   agentSel.addEventListener('change', update);
   modeSel.addEventListener('change', () => { update(); if (modeSel.value === 'custom') custom.focus(); });
   custom.addEventListener('input', update);
   cont.addEventListener('change', update);
   update();
-  const node = el('div', { class: 'field' }, label, el('div', { class: 'row' }, agentSel, modeSel), custom, contLabel, hint, preview);
+  const node = el('div', { class: 'field' }, label, el('div', { class: 'row' }, agentSel, modeSel, modelSel), custom, contLabel, hint, preview);
   return {
     node, read,
     setTarget(t, u = user) { target = t; user = u; update(); },
@@ -496,7 +514,14 @@ async function detectRemoteAgents(ctx) {
 }
 
 class Session {
-  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '', account = null }) {
+  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '', account = null, extraEnv = null, writeFiles = null, keepShell = true }) {
+    this.keepShell = keepShell;  // false — окно закрывается вместе с агентом (консоли команды: туда пишет программа)
+    // OpenCode и MiMo (Bun) падают, если стартуют в узком терминале: запускаем широкими,
+    // а под размер окна подстраиваемся, когда их интерфейс уже загрузился.
+    this.minStartCols = /^(opencode|mimo)\b/.test(command || '') ? 100 : 0;
+    this.holdSize = false;
+    this.extraEnv = extraEnv;      // переменные поверх аккаунта: модель с сервера, MCP команды
+    this.writeFiles = writeFiles;  // файлы, которые пишутся перед запуском (конфиги MCP/OpenCode, список задач)
     this.id = nextSessionId++;
     this.cwd = cwd || path;  // для «агент локально» path — адрес на сервере, а запускаемся в локальной папке
     this.agent = agent;            // короткое имя агента для меток (null — консоль без агента)
@@ -562,10 +587,16 @@ class Session {
     this.startedAt = performance.now();
     this.pendingPrompt = this.typePrompt;
     this.fitNow();
-    const base = { type: 'spawn', id: this.id, cols: this.cols || 120, rows: this.rows || 30 };
+    this.holdSize = this.minStartCols > 0;
+    const base = { type: 'spawn', id: this.id, cols: Math.max(this.cols || 120, this.minStartCols), rows: this.rows || 30 };
+    if (this.holdSize) {
+      this.term.resize(base.cols, base.rows);
+      setTimeout(() => { this.holdSize = false; this.cols = 0; this.fitNow(); }, 10000);
+    }
     if (!this.ssh) {
       native.send({ ...base, cwd: this.cwd, shell: state.settings.shell, command: this.command,
-        env: this.account?.env, ensureDirs: this.account?.dirs, files: this.account?.files });
+        env: { ...(this.account?.env || {}), ...(this.extraEnv || {}) }, ensureDirs: this.account?.dirs, files: this.account?.files,
+        writeFiles: this.writeFiles, keepShell: this.keepShell });
     } else {
       native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command, this.account) });
     }
@@ -638,6 +669,7 @@ class Session {
   isVisible() { return panes.includes(this.id) && this.host.isConnected && this.host.parentElement?.classList.contains('pane-body'); }
 
   fitNow() {
+    if (this.holdSize) return;
     if (!this.isVisible()) return;
     const dims = this.fit.proposeDimensions();
     if (!dims || !dims.cols || !dims.rows || isNaN(dims.cols)) return;
@@ -917,6 +949,7 @@ function renderTabs() {
       },
     },
     el('span', { class: `dot ${dotClass(s)}`, title: dotTitle(s) }),
+    typeof sessionTeamRole === 'function' && sessionTeamRole(s) ? el('span', { class: 'tab-role', style: `color:${TEAM_ROLES[sessionTeamRole(s)].color}` }, TEAM_ROLES[sessionTeamRole(s)].icon) : null,
     el('span', { class: 'label' }, sessionLabel(s)),
     el('button', { class: 'icon-btn small close', title: 'Закрыть (Ctrl+Shift+W)', onclick: (e) => { e.stopPropagation(); closeSession(id); } }, icon(ICONS.close)));
     return tab;
@@ -964,7 +997,10 @@ function renderGrid() {
   for (const p of nodes) if (p.parentElement !== grid) grid.append(p);
   nodes.forEach((p, i) => { if (grid.children[i] !== p) grid.insertBefore(p, grid.children[i]); });
 
-  requestAnimationFrame(() => { for (const id of visible) sessions.get(id)?.fitNow(); });
+  requestAnimationFrame(() => {
+    for (const id of visible) sessions.get(id)?.fitNow();
+    if (typeof drawTeamCables === 'function') drawTeamCables();
+  });
 }
 
 function createPane() {
@@ -994,6 +1030,8 @@ function fillPane(pane, id) {
   const s = id ? sessions.get(id) : null;
   pane.dataset.session = s ? s.id : '';
   pane.classList.toggle('focused', !!s && s.id === activeId && layoutCount() > 1);
+  const role = s && typeof sessionTeamRole === 'function' ? sessionTeamRole(s) : null;
+  pane.dataset.role = role || '';
 
   if (!s) {
     header.replaceChildren(el('div', { class: 'pane-title' }, el('span', {}, 'Пустая ячейка')));
@@ -1008,6 +1046,7 @@ function fillPane(pane, id) {
 
   header.replaceChildren(
     el('span', { class: `dot ${dotClass(s)}`, title: dotTitle(s) }),
+    role ? el('span', { class: 'role-chip', title: t('Роль в команде') }, `${TEAM_ROLES[role].icon} ${t(TEAM_ROLES[role].title)}`) : null,
     el('div', { class: 'pane-title', title: s.path }, el('b', {}, sessionLabel(s)), s.agent ? el('i', { class: 'tag agent' }, s.agent) : null,
       s.account ? el('i', { class: 'tag account', title: t('Аккаунт') }, accountName(s.account.id)) : null, el('span', {}, s.title || s.path)),
     el('button', { class: 'icon-btn small', title: zoomedId ? 'Вернуть сетку' : 'Развернуть (двойной клик по заголовку)', onclick: () => toggleZoom(s.id) }, icon(ICONS.expand)),
@@ -1083,6 +1122,7 @@ function renderWelcome() {
   const empty = sessions.size === 0;
   $('#welcome').hidden = !empty;
   $('#grid').hidden = empty;
+  $('#workspace').hidden = empty;
   if (!empty) return;
   const recent = sortedProjects().slice(0, 6);
   $('#welcome-recent').replaceChildren(...recent.map((p) => el('button', { class: 'chip', title: p.path, onclick: () => openProject(p) }, icon(ICONS.play), p.name)));
@@ -1144,8 +1184,17 @@ async function openProject(p, { forceNew = false, plain = false, agent = null } 
   }
   // Аккаунт: на сервере — папки на сервере, иначе — локальные.
   const account = accountSetup(p.account, { remote: !!ssh });
-  addSession({ projectId: p.id, name: p.name, path: p.path, cwd, command: built.command, typePrompt: built.typePrompt, ssh, account,
-    agent: plain ? null : launchAgentShort(launch) });
+  // Модель с вашего сервера — только когда агент запускается на этом компьютере.
+  let extraEnv = null, writeFiles = null;
+  const model = !plain && !ssh && launch.mode !== 'custom' && launch.mode !== 'shell' ? modelSetup(launch.agent, launch) : null;
+  if (model?.env) extraEnv = model.env;
+  if (model?.opencode) {
+    const path = `${env.dataDir}\\models\\${launch.agent}-${launch.server}-${p.id}.json`;
+    writeFiles = { [path]: JSON.stringify({ $schema: 'https://opencode.ai/config.json', ...model.opencode }, null, 1) };
+    extraEnv = { [launch.agent === 'mimo' ? 'MIMOCODE_CONFIG' : 'OPENCODE_CONFIG']: path };
+  }
+  addSession({ projectId: p.id, name: p.name, path: p.path, cwd, command: built.command, typePrompt: built.typePrompt, ssh, account, extraEnv, writeFiles,
+    agent: plain ? null : `${launchAgentShort(launch) || ''}${model ? ' · local' : ''}` || null });
   saveState();
 }
 
@@ -1735,6 +1784,7 @@ function settingsDialog() {
       sh === 'pwsh.exe' ? `PowerShell 7 (pwsh.exe)${env.hasPwsh ? '' : ` — ${t('не установлен')}`}` : 'Windows PowerShell (powershell.exe)')));
     if (!shells.includes(st.shell)) shell.append(el('option', { value: st.shell, selected: true }, st.shell));
     const agentCtl = launchControls(defaultLaunch(), { target: 'local', available: localAgents, title: 'ИИ-агент для новых проектов' });
+    const serversEditor = modelServersEditor();
     // Аккаунты: правка названий, удаление, папка. Изменения применяются при «Сохранить».
     let accounts = accountList().map((a) => ({ ...a }));
     const accountsBox = el('div', { class: 'accounts' });
@@ -1767,7 +1817,7 @@ function settingsDialog() {
     const overrides = el('details', { class: 'agent-overrides' }, el('summary', {}, 'Команды агентов'),
       el('div', { class: 'hint' }, 'Пусто — значение по умолчанию (показано серым).'),
       el('div', { class: 'ov-grid' },
-        el('b', {}, 'Агент'), el('b', {}, 'Команда'), el('b', {}, 'Без подтверждений'), el('b', {}, 'Продолжить'),
+        el('b', {}, 'Агент'), el('b', {}, 'Команда запуска'), el('b', {}, 'Без подтверждений'), el('b', {}, 'Продолжить'),
         AGENTS.flatMap((a) => {
           const o = (st.agentOverrides || {})[a.id] || {};
           const mk = (key) => el('input', { type: 'text', class: 'mono', value: o[key] || '', placeholder: a[key], spellcheck: 'false' });
@@ -1791,6 +1841,7 @@ function settingsDialog() {
     const form = el('form', { onsubmit: (e) => {
       e.preventDefault();
       st.shell = shell.value;
+      st.modelServers = serversEditor.read();
       st.agentOverrides = {};
       for (const [id, inputs] of Object.entries(overrideInputs)) {
         const o = {};
@@ -1814,6 +1865,8 @@ function settingsDialog() {
       el('div', { class: 'field' }, el('label', {}, 'Оболочка'), shell),
       agentCtl.node,
       overrides,
+      el('div', { class: 'field' }, el('label', {}, 'Серверы моделей'), serversEditor.node,
+        el('div', { class: 'hint' }, 'Свои модели: llama.cpp, Ollama, LM Studio, vLLM (OpenAI-совместимый API). На них можно запускать Claude Code, OpenCode, MiMo и Qwen Code — выбирается в поле «Модель» у агента.')),
       el('div', { class: 'field' }, el('label', {}, 'Аккаунты'), accountsBox,
         el('div', { class: 'hint' }, 'У каждого аккаунта свой вход агентов, история и настройки. Аккаунт выбирается в настройках проекта.')),
       el('div', { class: 'field' }, el('label', {}, 'Папка для новых проектов'), el('div', { class: 'row' }, root, browse)),
@@ -1966,7 +2019,8 @@ $('#welcome').addEventListener('click', (e) => {
 setInterval(renderProjects, 60_000);  // обновить «N мин назад»
 
 native.on('init', async (m) => {
-  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '', systemLanguage: m.systemLanguage || 'ru', dataDir: m.dataDir || '' });
+  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '', systemLanguage: m.systemLanguage || 'ru', dataDir: m.dataDir || '',
+    mcpAddr: m.mcpAddr || '', mcpSecret: m.mcpSecret || '', exePath: m.exePath || '' });
   const saved = m.state;
   if (saved && typeof saved === 'object') {
     if (Array.isArray(saved.projects)) state.projects = saved.projects.filter((p) => p && p.path);
@@ -1990,6 +2044,7 @@ native.on('init', async (m) => {
       : { agent: 'claude', mode: 'custom', custom: c, cont: false };
   }
   delete state.settings.command;
+  if (saved?.team) restoreTeam(saved.team);
   await i18nLoad();
   i18nSetLanguage(i18nResolve(state.settings.language, env.systemLanguage));
   native.send({ type: 'setLanguage', lang: I18N.lang });

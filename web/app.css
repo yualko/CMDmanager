@@ -403,3 +403,96 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .account-row.main { height: 30px; padding: 0 9px; border: 1px dashed var(--border); border-radius: 6px; }
 .account-row.main span:first-child { flex: 1; }
 .accounts .btn.ghost { justify-content: flex-start; height: 30px; }
+
+/* ============================================================================
+   Команда агентов: рабочая область, кабели, пакеты, роли, панель
+   ============================================================================ */
+#main { position: relative; }
+#workspace { flex: 1; min-height: 0; display: flex; }
+#workspace #grid { flex: 1; min-width: 0; }
+
+.team-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; flex: none;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text-dim);
+  font: inherit; cursor: pointer;
+}
+.team-btn svg { width: 16px; height: 16px; }
+.team-btn:hover { color: var(--text); background: var(--bg-hover); }
+.team-btn.active { color: #e0b04a; border-color: rgba(224, 176, 74, .5); background: rgba(224, 176, 74, .1); }
+
+/* кабели поверх сетки */
+#team-cables { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; overflow: visible; }
+.cable-shell { fill: none; stroke: #0b0c10; stroke-width: 7; stroke-linecap: round; opacity: .55; }
+.cable-core { fill: none; stroke-width: 2.5; stroke-linecap: round; opacity: .28; }
+.cable-flow { fill: none; stroke-width: 2; stroke-linecap: round; stroke-dasharray: 3 14; opacity: .55; animation: cable-flow 1.4s linear infinite; }
+.cable-flow.active { stroke-width: 4; stroke-dasharray: 10 8; opacity: 1; animation-duration: .35s; }
+@keyframes cable-flow { to { stroke-dashoffset: -34; } }
+.cable-plug { fill: #0b0c10; stroke-width: 2.5; }
+.packet-label { fill: #fff; font: 700 11px var(--mono-font); paint-order: stroke; stroke: #0b0c10; stroke-width: 3px; }
+
+/* роли окон */
+.pane[data-role="orchestrator"] { --role: #e0b04a; }
+.pane[data-role="developer"] { --role: #5b9cf0; }
+.pane[data-role="checker"] { --role: #5fbf7f; }
+.pane[data-role]:not([data-role=""]) { border-color: color-mix(in srgb, var(--role) 55%, var(--border)); }
+.pane[data-role]:not([data-role=""]) .pane-header { background: linear-gradient(90deg, color-mix(in srgb, var(--role) 16%, var(--bg-elev)), var(--bg-elev) 60%); }
+.role-chip { flex: none; padding: 0 7px; border-radius: 5px; line-height: 18px; font-size: 11px; font-weight: 700; color: var(--role); background: color-mix(in srgb, var(--role) 16%, transparent); }
+.tab-role { font-size: 12px; flex: none; }
+.pane.receive { animation: pane-receive .9s ease-out; }
+@keyframes pane-receive {
+  0% { box-shadow: 0 0 0 0 var(--pulse); }
+  40% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--pulse) 45%, transparent); }
+  100% { box-shadow: 0 0 0 14px transparent; }
+}
+
+/* панель команды */
+#team-panel {
+  width: 330px; flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; overflow-y: auto;
+  border-left: 1px solid var(--border); background: var(--bg-elev);
+}
+.tm-head { display: flex; align-items: center; gap: 8px; }
+.tm-head b { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-badge { font-size: 11px; font-weight: 700; padding: 0 7px; line-height: 18px; border-radius: 9px; color: var(--ok); background: rgba(95, 191, 127, .14); }
+.tm-badge.paused { color: var(--warn); background: rgba(224, 176, 74, .14); }
+.tm-progress { height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; margin-top: 4px; }
+.tm-progress div { height: 100%; background: linear-gradient(90deg, var(--accent), #5fbf7f); transition: width .4s; }
+.tm-progress-text { font-size: 11.5px; color: var(--text-dim); }
+.tm-section { margin-top: 8px; color: var(--text-faint); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; }
+.tm-member { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius); background: var(--bg); border-left: 3px solid var(--role); }
+.tm-member .tm-role { color: var(--role); font-size: 15px; width: 18px; text-align: center; }
+.tm-member > div { flex: 1; min-width: 0; display: grid; }
+.tm-member small { color: var(--text-faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-state { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.tm-state.busy { color: var(--accent); }
+.tm-tasks { display: grid; gap: 2px; }
+.tm-task { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px; font-size: 12px; }
+.tm-task:hover { background: var(--bg-hover); }
+.tm-status { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.tm-id { color: var(--text-faint); font: 11px var(--mono-font); flex: none; }
+.tm-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-who { flex: none; font-size: 12px; }
+.tm-logs { display: grid; gap: 2px; font-size: 11.5px; }
+.tm-log { display: flex; gap: 6px; align-items: center; color: var(--text-dim); }
+.tm-log .tm-label { color: var(--text); font-family: var(--mono-font); }
+.tm-log time { margin-left: auto; color: var(--text-faint); font-size: 10.5px; }
+
+/* мастер команды */
+.modal.wide { width: min(760px, 100%); }
+.tw-members { display: grid; gap: 6px; }
+.tw-row { display: grid; grid-template-columns: 1.1fr 1.2fr 1.4fr 1fr auto; gap: 6px; align-items: center; padding-left: 8px; border-left: 3px solid var(--role); }
+.tw-row select { height: 32px; padding: 0 6px; min-width: 0; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.tw-members .btn.ghost { justify-content: flex-start; height: 30px; }
+
+/* серверы моделей */
+.servers { display: grid; gap: 8px; }
+.server-row { display: grid; gap: 4px; }
+.server-row .row input { height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; min-width: 0; }
+.server-row .row input:first-child { flex: 0 0 150px; }
+.servers .btn.ghost { justify-content: flex-start; height: 30px; }
+.field .row select + select { flex: 1; }
+#team-panel { overflow-x: hidden; }
+.tm-task, .tm-log { min-width: 0; }
+.tm-log { overflow: hidden; white-space: nowrap; }
+.pane-title b { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pane-title { overflow: hidden; }
+.role-chip { position: relative; z-index: 6; box-shadow: 0 0 0 1px color-mix(in srgb, var(--role) 45%, transparent), 0 0 12px color-mix(in srgb, var(--role) 35%, transparent); }

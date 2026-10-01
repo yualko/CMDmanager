@@ -48,9 +48,15 @@
         <button id="btn-new-console" class="icon-btn" title="Новая консоль: PowerShell или SSH (Ctrl+Shift+T)">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
         </button>
+        <button id="btn-team" class="team-btn" title="Команда агентов: оркестратор, разработчик, проверяющий">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5L6.5 17M12 11.5l5.5 5.5"/></svg><span>Команда</span>
+        </button>
         <div id="layouts" title="Сколько консолей показывать одновременно"></div>
       </header>
-      <section id="grid"></section>
+      <div id="workspace">
+        <section id="grid"></section>
+        <aside id="team-panel" hidden></aside>
+      </div>
       <section id="welcome" hidden>
         <div class="welcome-inner">
           <h1>Консоли проектов в одном окне</h1>
@@ -87,5 +93,7 @@
   <script src="vendor/addon-web-links.js"></script>
   <script src="i18n.js"></script>
   <script src="app.js"></script>
+  <script src="models.js"></script>
+  <script src="team.js"></script>
 </body>
 </html>

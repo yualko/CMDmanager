@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>CMD Manager</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 7l5 5-5 5" class="brand-chevron"/><path d="M13 17h6" class="brand-line"/></svg>
+        <span>CMD Manager</span>
+      </div>
+      <div class="sidebar-actions">
+        <button id="btn-create" class="btn primary" title="Создать папку проекта и запустить Claude (Ctrl+Shift+N)">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Создать проект
+        </button>
+        <button id="btn-open" class="btn" title="Выбрать существующую папку (Ctrl+Shift+O)">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Открыть проект
+        </button>
+      </div>
+      <div class="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>
+        <input id="search" type="text" placeholder="Поиск проектов" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="section-title">Проекты</div>
+      <ul id="project-list"></ul>
+      <div class="sidebar-footer">
+        <button id="btn-settings" class="btn ghost" title="Настройки">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Настройки
+        </button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <button id="btn-sidebar" class="icon-btn" title="Показать/скрыть панель проектов (Ctrl+Shift+B)">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
+        <div id="tabs" role="tablist"></div>
+        <div id="layouts" title="Сколько консолей показывать одновременно"></div>
+      </header>
+      <section id="grid"></section>
+      <section id="welcome" hidden>
+        <div class="welcome-inner">
+          <h1>Консоли проектов в одном окне</h1>
+          <p>Выберите проект слева или создайте новый. Консоль откроется в папке проекта и сразу запустит Claude Code.</p>
+          <div class="welcome-actions">
+            <button class="btn primary big" data-action="create">Создать проект</button>
+            <button class="btn big" data-action="open">Открыть проект</button>
+          </div>
+          <div id="welcome-recent"></div>
+          <dl class="hotkeys">
+            <dt>Ctrl+Tab</dt><dd>следующая вкладка</dd>
+            <dt>Ctrl+1…9</dt><dd>перейти к вкладке</dd>
+            <dt>Ctrl+Shift+W</dt><dd>закрыть консоль</dd>
+            <dt>Shift+Enter</dt><dd>новая строка в Claude</dd>
+            <dt>Ctrl+= / Ctrl+−</dt><dd>размер шрифта</dd>
+            <dt>Двойной клик по заголовку</dt><dd>развернуть панель</dd>
+          </dl>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="parking" aria-hidden="true"></div>
+  <div id="modal-root"></div>
+  <div id="menu-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-webgl.js"></script>
+  <script src="vendor/addon-unicode11.js"></script>
+  <script src="vendor/addon-web-links.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

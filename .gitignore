@@ -1,0 +1,8 @@
+build/
+*.obj
+*.pdb
+*.ilk
+*.res
+.vs/
+dist/
+*.aps

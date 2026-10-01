@@ -20,6 +20,7 @@
 #include "WebView2.h"
 #include "nlohmann/json.hpp"
 #include "pty_session.h"
+#include "ssh_tools.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -31,6 +32,7 @@ namespace {
 constexpr UINT WM_APP_OUTPUT = WM_APP + 1;  // wParam = id сессии
 constexpr UINT WM_APP_EXIT = WM_APP + 2;    // wParam = id сессии
 constexpr UINT WM_APP_WEBMSG = WM_APP + 3;  // разобрать очередь сообщений из JS
+constexpr UINT WM_APP_POST = WM_APP + 4;    // lParam = std::string* с JSON для страницы (из фоновых потоков)
 
 constexpr wchar_t kWindowClass[] = L"CMDManagerWindow";
 constexpr wchar_t kAppTitle[] = L"CMD Manager";
@@ -196,8 +198,21 @@ void SpawnSession(const json& m) {
         id, [hwnd, id] { PostMessageW(hwnd, WM_APP_OUTPUT, id, 0); },
         [hwnd, id] { PostMessageW(hwnd, WM_APP_EXIT, id, 0); });
 
+    // Либо оболочка с командой, либо программа с аргументами (например, ssh.exe — без промежуточного PowerShell).
+    std::wstring cmdLine;
+    const std::string program = m.value("program", std::string());
+    if (program == "ssh") {
+        std::vector<std::wstring> argv{OpenSshTool(L"ssh.exe")};
+        for (const auto& a : m.value("args", json::array()))
+            if (a.is_string()) argv.push_back(Utf8ToWide(a.get<std::string>()));
+        cmdLine = JoinCommandLine(argv);
+    } else if (!program.empty()) {
+        error(L"Неизвестная программа: " + Utf8ToWide(program));
+        return;
+    } else {
+        cmdLine = BuildCommandLine(m.value("shell", std::string()), m.value("command", std::string()));
+    }
     std::wstring err;
-    const std::wstring cmdLine = BuildCommandLine(m.value("shell", std::string()), m.value("command", std::string()));
     if (!session->Start(cmdLine, cwd, cols, rows, g_job, &err)) {
         error(err);
         return;
@@ -346,6 +361,7 @@ void HandleWebMessage(const std::string& text) {
                    {"hasClaude", SearchExecutable(L"claude.exe") || SearchExecutable(L"claude.cmd")},
                    {"home", PathToUtf8(KnownFolder(FOLDERID_Profile))},
                    {"osBuild", WindowsBuildNumber()},
+                   {"hasSsh", OpenSshAvailable()},
                    {"dataDir", PathToUtf8(g_dataDir)}});
     } else if (type == "saveState") {
         WriteFileAtomic(g_dataDir / L"state.json", m["data"].dump(2, ' ', false, json::error_handler_t::replace));
@@ -353,6 +369,17 @@ void HandleWebMessage(const std::string& text) {
         std::wstring path =
             PickFolder(Utf8ToWide(m.value("title", std::string("Выберите папку"))), Utf8ToWide(m.value("initial", std::string())));
         Reply(m, {{"path", path.empty() ? json(nullptr) : json(WideToUtf8(path))}});
+    } else if (type == "sshPrepare") {
+        // Генерация ключа и проверка входа занимают секунды — делаем в фоне, ответ присылаем через WM_APP_POST.
+        const int reqId = m.value("reqId", 0);
+        std::thread([reqId, host = m.value("host", std::string()), port = m.value("port", 22),
+                     user = m.value("user", std::string())] {
+            json r = PrepareSshKey(host, port, user);
+            r["type"] = "reply";
+            r["reqId"] = reqId;
+            auto* text = new std::string(r.dump(-1, ' ', false, json::error_handler_t::replace));
+            if (!PostMessageW(g_hwnd, WM_APP_POST, 0, reinterpret_cast<LPARAM>(text))) delete text;
+        }).detach();
     } else if (type == "createFolder") {
         CreateProjectFolder(m);
     } else if (type == "checkPaths") {
@@ -521,6 +548,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (!rest.empty()) PostToWeb({{"type", "output"}, {"id", it->first}, {"data", rest}});
                 PostToWeb({{"type", "exit"}, {"id", it->first}, {"code", it->second->ExitCode()}});
             }
+            return 0;
+        }
+        case WM_APP_POST: {
+            std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
+            if (g_webview) g_webview->PostWebMessageAsJson(Utf8ToWide(*text).c_str());
             return 0;
         }
         case WM_APP_WEBMSG:

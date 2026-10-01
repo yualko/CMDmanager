@@ -111,6 +111,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .project-meta { grid-column: 1 / -1; color: var(--text-faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .project-meta bdi { direction: ltr; }
 .project.missing .project-name { color: var(--text-faint); text-decoration: line-through; }
+.project .tag {
+  flex: none; padding: 0 5px; border-radius: 4px; line-height: 16px;
+  background: rgba(91, 156, 240, .16); color: #7cb4ff; font-size: 10px; font-weight: 700; letter-spacing: .4px;
+}
 .project .pin { width: 12px; height: 12px; color: var(--accent); flex: none; }
 .project .open-count {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
@@ -253,7 +257,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .field { display: grid; gap: 6px; }
 .field > label { color: var(--text-dim); font-size: 12px; font-weight: 500; }
 .field .hint { color: var(--text-faint); font-size: 11.5px; }
-.field input[type=text], .field input[type=number], .field select {
+.field input[type=text], .field input[type=number], .field input[type=password], .field select {
   height: 34px; padding: 0 10px; width: 100%;
   border: 1px solid var(--border-strong); border-radius: var(--radius);
   background: var(--bg); color: var(--text); font: inherit;
@@ -261,10 +265,11 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .field input.mono { font-family: var(--mono-font); font-size: 12.5px; }
 .field .row { display: flex; gap: 6px; }
 .field .row input { flex: 1; min-width: 0; }
+.field .row input.port { flex: none; width: 84px; }
 .check { display: flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
 .check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 .preview-path { font-family: var(--mono-font); font-size: 12px; color: var(--text-dim); word-break: break-all; }
-.modal-error { color: var(--danger); min-height: 0; }
+.modal-error { color: var(--danger); min-height: 0; white-space: pre-line; overflow-wrap: anywhere; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 
 /* ---------- контекстное меню и уведомления ---------- */
@@ -289,3 +294,17 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
   animation: fade .15s ease-out;
 }
 .toast.error { border-color: var(--danger); }
+
+/* ---------- выбор: папка или SSH ---------- */
+.choice { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 20px 20px; }
+.choice-card {
+  display: grid; justify-items: start; gap: 6px; padding: 16px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--bg-elev-2); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.choice-card svg { width: 22px; height: 22px; color: var(--accent); }
+.choice-card b { font-size: 14px; font-weight: 600; }
+.choice-card span { color: var(--text-dim); font-size: 12px; }
+.choice-card:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); }
+.choice-card:disabled { opacity: .5; cursor: default; }
+@media (max-width: 520px) { .choice { grid-template-columns: 1fr; } }

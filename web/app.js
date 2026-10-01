@@ -52,11 +52,12 @@ const state = {
     sidebar: true,
     projectsRoot: '',
     restoreSessions: false,
+    checkUpdates: true,
   },
   openProjects: [], // проекты, открытые при последнем закрытии (для восстановления)
 };
 
-const env = { home: '', hasPwsh: false, hasClaude: true, osBuild: 0, hasSsh: false };
+const env = { home: '', hasPwsh: false, hasClaude: true, osBuild: 0, hasSsh: false, version: '' };
 
 const sessions = new Map();  // id -> Session
 let tabOrder = [];           // порядок вкладок (id сессий)
@@ -1394,6 +1395,8 @@ function settingsDialog() {
     const fontSize = el('input', { type: 'number', min: 8, max: 32, value: st.fontSize });
     const root = el('input', { type: 'text', class: 'mono', value: defaultProjectsRoot(), spellcheck: 'false' });
     const restore = el('input', { type: 'checkbox', checked: st.restoreSessions });
+    const checkUpdates = el('input', { type: 'checkbox', checked: st.checkUpdates !== false });
+    const checkNow = el('button', { type: 'button', class: 'btn small-btn', onclick: () => checkForUpdates(true) }, 'Проверить сейчас');
     const browse = el('button', { type: 'button', class: 'btn', onclick: async () => {
       const r = await native.request('pickFolder', { title: 'Папка для новых проектов', initial: root.value });
       if (r.path) root.value = r.path;
@@ -1405,6 +1408,7 @@ function settingsDialog() {
       st.command = command.value.trim();
       st.projectsRoot = root.value.trim();
       st.restoreSessions = restore.checked;
+      st.checkUpdates = checkUpdates.checked;
       const fs = Math.min(32, Math.max(8, Number(fontSize.value) || 14));
       if (fs !== st.fontSize) applyFontSize(fs);
       close();
@@ -1416,6 +1420,9 @@ function settingsDialog() {
       el('div', { class: 'field' }, el('label', {}, 'Папка для новых проектов'), el('div', { class: 'row' }, root, browse)),
       el('div', { class: 'field' }, el('label', {}, 'Размер шрифта консоли'), fontSize),
       el('label', { class: 'check' }, restore, 'При запуске снова открывать проекты из прошлого сеанса'),
+      el('div', { class: 'label-row' }, el('label', { class: 'check' }, checkUpdates, 'Проверять обновления при запуске'), checkNow),
+      el('div', { class: 'about' }, `CMD Manager ${env.version}`, el('br'), 'Разработка ООО «Аутсорсинг трейд» · ',
+        el('a', { href: '#', onclick: (e) => { e.preventDefault(); native.send({ type: 'openUrl', url: 'https://itradmin.ru' }); } }, 'itradmin.ru')),
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Сохранить')));
     modal.append(el('h2', {}, 'Настройки'), form);
   });
@@ -1479,6 +1486,61 @@ document.addEventListener('wheel', (e) => {
 }, { passive: false, capture: true });
 
 // ============================================================================
+// Обновления
+// ============================================================================
+let updateInfo = null;
+
+function checkForUpdates(manual = false) {
+  if (manual) toast('Проверяю обновления…');
+  native.send({ type: 'checkUpdate', manual });
+}
+
+native.on('update', (m) => {
+  if (m.error) { if (m.manual) toast(`Не удалось проверить обновления: ${m.error}`, 'error'); return; }
+  if (!m.available) { if (m.manual) toast(`Установлена последняя версия (${m.current})`); return; }
+  updateInfo = m;
+  $('#update-version').textContent = m.version;
+  $('#update-banner').hidden = false;
+  if (m.manual) toast(`Доступна версия ${m.version}`);
+});
+
+native.on('updateProgress', (m) => {
+  $('#btn-update').textContent = m.percent >= 0 ? `Загрузка ${m.percent}%` : 'Загрузка…';
+});
+
+native.on('updateError', (m) => {
+  const btn = $('#btn-update');
+  btn.disabled = false;
+  btn.textContent = 'Обновить';
+  toast(`Обновление не удалось: ${m.message}`, 'error');
+});
+
+$('#btn-update').addEventListener('click', async () => {
+  const live = [...sessions.values()].filter((s) => s.status !== 'exited').length;
+  const ok = await confirmDialog({
+    title: `Обновить до версии ${updateInfo?.version}?`,
+    text: live
+      ? `Программа скачает обновление, закроется и откроется снова. Открытые консоли (${live}) и запущенный в них Claude будут закрыты.`
+      : 'Программа скачает обновление, закроется и откроется снова.',
+    okText: 'Обновить',
+  });
+  if (!ok) return;
+  const btn = $('#btn-update');
+  btn.disabled = true;
+  btn.textContent = 'Загрузка…';
+  saveState();
+  native.send({ type: 'installUpdate' });
+});
+$('#update-notes').addEventListener('click', (e) => {
+  e.preventDefault();
+  if (updateInfo?.pageUrl) native.send({ type: 'openUrl', url: updateInfo.pageUrl });
+});
+document.querySelector('.credits a').addEventListener('click', (e) => {
+  e.preventDefault();
+  native.send({ type: 'openUrl', url: e.target.dataset.url });
+});
+
+// ============================================================================
 // Запуск
 // ============================================================================
 $('#btn-create').addEventListener('click', createProjectDialog);
@@ -1494,7 +1556,7 @@ $('#welcome').addEventListener('click', (e) => {
 setInterval(renderProjects, 60_000);  // обновить «N мин назад»
 
 native.on('init', async (m) => {
-  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, hasClaude: m.hasClaude !== false, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh });
+  Object.assign(env, { home: m.home || '', hasPwsh: !!m.hasPwsh, hasClaude: m.hasClaude !== false, osBuild: m.osBuild || 0, hasSsh: !!m.hasSsh, version: m.version || '' });
   const saved = m.state;
   if (saved && typeof saved === 'object') {
     if (Array.isArray(saved.projects)) state.projects = saved.projects.filter((p) => p && p.path);
@@ -1509,6 +1571,7 @@ native.on('init', async (m) => {
   if (!env.hasClaude) toast('claude не найден в PATH — консоль откроется, но команда запуска может не сработать.', 'error');
 
   renderAll();
+  if (state.settings.checkUpdates !== false) setTimeout(() => checkForUpdates(false), 3000);
   await refreshMissing();
 
   if (state.settings.restoreSessions) {

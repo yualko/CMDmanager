@@ -351,3 +351,15 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .label-row { display: flex; align-items: center; justify-content: space-between; }
 .btn.small-btn { height: 24px; padding: 0 8px; font-size: 12px; }
 @media (max-width: 520px) { .segmented { grid-template-columns: 1fr; } }
+
+/* ---------- обновление и подпись ---------- */
+.update-banner {
+  display: grid; gap: 8px; margin: 0 8px 8px; padding: 10px 12px;
+  border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft);
+}
+.update-text { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.update-text a, .credits a, .about a { color: var(--accent); text-decoration: none; }
+.update-text a:hover, .credits a:hover, .about a:hover { text-decoration: underline; }
+.update-banner .btn { height: 28px; }
+.credits { padding: 6px 12px 2px; color: var(--text-faint); font-size: 11px; line-height: 1.5; }
+.about { color: var(--text-faint); font-size: 12px; padding-top: 4px; border-top: 1px solid var(--border); }

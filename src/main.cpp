@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <shobjidl.h>
 #include <wrl.h>
 
@@ -20,7 +21,10 @@
 #include "WebView2.h"
 #include "nlohmann/json.hpp"
 #include "pty_session.h"
+#include "installer.h"
 #include "ssh_tools.h"
+#include "update.h"
+#include "version.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -33,6 +37,7 @@ constexpr UINT WM_APP_OUTPUT = WM_APP + 1;  // wParam = id сессии
 constexpr UINT WM_APP_EXIT = WM_APP + 2;    // wParam = id сессии
 constexpr UINT WM_APP_WEBMSG = WM_APP + 3;  // разобрать очередь сообщений из JS
 constexpr UINT WM_APP_POST = WM_APP + 4;    // lParam = std::string* с JSON для страницы (из фоновых потоков)
+constexpr UINT WM_APP_UPDATE_READY = WM_APP + 5;  // lParam = std::wstring* — путь к скачанному установщику
 
 constexpr wchar_t kWindowClass[] = L"CMDManagerWindow";
 constexpr wchar_t kAppTitle[] = L"CMD Manager";
@@ -43,6 +48,16 @@ HWND g_hwnd = nullptr;
 HANDLE g_job = nullptr;
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
+ComPtr<ICoreWebView2Environment> g_env;
+bool g_updateInProgress = false;
+
+// Интерфейс, вшитый в exe (ресурс 101, собирается из web/ скриптом tools/pack-web.ps1).
+// Формат: "CMDW", u32 число файлов, затем для каждого: u16 длина имени, имя (UTF-8, через «/»), u32 размер, данные.
+struct EmbeddedFile {
+    const BYTE* data;
+    DWORD size;
+};
+std::map<std::string, EmbeddedFile> g_embedded;
 std::map<int, std::unique_ptr<PtySession>> g_sessions;
 std::deque<std::string> g_inbox;  // сообщения из JS, обрабатываются вне колбэка WebView2
 fs::path g_dataDir;               // %APPDATA%\CMDManager
@@ -88,7 +103,49 @@ fs::path FindWebDir() {
         std::error_code ec;
         if (fs::exists(candidate / L"index.html", ec)) return candidate;
     }
-    return exe / L"web";
+    return {};
+}
+
+bool LoadEmbeddedWeb() {
+    HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(101), RT_RCDATA);
+    if (!res) return false;
+    const BYTE* p = static_cast<const BYTE*>(LockResource(LoadResource(nullptr, res)));
+    const DWORD total = SizeofResource(nullptr, res);
+    if (!p || total < 8 || memcmp(p, "CMDW", 4) != 0) return false;
+    const BYTE* end = p + total;
+    uint32_t count;
+    memcpy(&count, p + 4, 4);
+    p += 8;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (end - p < 2) return false;
+        uint16_t nameLen;
+        memcpy(&nameLen, p, 2);
+        p += 2;
+        if (end - p < nameLen + 4) return false;
+        std::string name(reinterpret_cast<const char*>(p), nameLen);
+        p += nameLen;
+        uint32_t size;
+        memcpy(&size, p, 4);
+        p += 4;
+        if (static_cast<uint32_t>(end - p) < size) return false;
+        g_embedded[name] = {p, size};
+        p += size;
+    }
+    return g_embedded.count("index.html") > 0;
+}
+
+const wchar_t* MimeType(const std::string& name) {
+    auto ends = [&](const char* ext) {
+        size_t n = strlen(ext);
+        return name.size() >= n && _stricmp(name.c_str() + name.size() - n, ext) == 0;
+    };
+    if (ends(".html")) return L"text/html; charset=utf-8";
+    if (ends(".js")) return L"text/javascript; charset=utf-8";
+    if (ends(".css")) return L"text/css; charset=utf-8";
+    if (ends(".svg")) return L"image/svg+xml";
+    if (ends(".png")) return L"image/png";
+    if (ends(".json")) return L"application/json";
+    return L"text/plain; charset=utf-8";
 }
 
 std::string Base64(const std::string& bytes) {
@@ -361,6 +418,8 @@ void HandleWebMessage(const std::string& text) {
                    {"hasClaude", SearchExecutable(L"claude.exe") || SearchExecutable(L"claude.cmd")},
                    {"home", PathToUtf8(KnownFolder(FOLDERID_Profile))},
                    {"osBuild", WindowsBuildNumber()},
+                   {"version", CMDM_VERSION_STR},
+                   {"installed", fs::path(InstalledExePath()) == fs::path(ExeDir() / L"CMDManager.exe")},
                    {"hasSsh", OpenSshAvailable()},
                    {"dataDir", PathToUtf8(g_dataDir)}});
     } else if (type == "saveState") {
@@ -415,6 +474,40 @@ void HandleWebMessage(const std::string& text) {
         if (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0) OpenExternally(url);
     } else if (type == "attention") {
         FlashIfInactive();
+    } else if (type == "checkUpdate") {
+        const bool manual = m.value("manual", false);
+        std::thread([manual] {
+            UpdateInfo u = CheckForUpdate();
+            json r = {{"type", "update"},     {"manual", manual},   {"available", u.available},
+                      {"version", u.version}, {"pageUrl", u.pageUrl}, {"notes", u.notes},
+                      {"error", u.error},     {"current", CMDM_VERSION_STR}};
+            auto* text = new std::string(r.dump(-1, ' ', false, json::error_handler_t::replace));
+            if (!PostMessageW(g_hwnd, WM_APP_POST, 0, reinterpret_cast<LPARAM>(text))) delete text;
+        }).detach();
+    } else if (type == "installUpdate") {
+        if (g_updateInProgress) return;
+        g_updateInProgress = true;
+        std::thread([] {
+            auto post = [](const json& j) {
+                auto* text = new std::string(j.dump(-1, ' ', false, json::error_handler_t::replace));
+                if (!PostMessageW(g_hwnd, WM_APP_POST, 0, reinterpret_cast<LPARAM>(text))) delete text;
+            };
+            UpdateInfo u = CheckForUpdate();
+            std::wstring path;
+            std::string error = u.error;
+            if (error.empty() && !u.available) error = "Обновлений нет — установлена последняя версия";
+            int lastPercent = -1;
+            if (error.empty() && DownloadUpdate(u, &path, &error, [&](uint64_t got, uint64_t total) {
+                    int percent = total ? static_cast<int>(got * 100 / total) : -1;
+                    if (percent != lastPercent) post({{"type", "updateProgress"}, {"percent", lastPercent = percent}});
+                })) {
+                auto* ready = new std::wstring(path);
+                if (!PostMessageW(g_hwnd, WM_APP_UPDATE_READY, 0, reinterpret_cast<LPARAM>(ready))) delete ready;
+                return;
+            }
+            post({{"type", "updateError"}, {"message", error}});
+            PostMessageW(g_hwnd, WM_APP_UPDATE_READY, 0, 0);  // сброс флага
+        }).detach();
     } else if (type == "setTitle") {
         std::wstring t = Utf8ToWide(m.value("title", std::string()));
         SetWindowTextW(g_hwnd, t.empty() ? kAppTitle : (t + L" — " + kAppTitle).c_str());
@@ -453,11 +546,47 @@ HRESULT OnControllerCreated(HRESULT result, ICoreWebView2Controller* controller)
     if (ComPtr<ICoreWebView2Settings3> s3; SUCCEEDED(settings.As(&s3)))
         s3->put_AreBrowserAcceleratorKeysEnabled(devTools);  // F5/Ctrl+R не должны перезагружать страницу с терминалами
 
-    if (ComPtr<ICoreWebView2_3> wv3; SUCCEEDED(g_webview.As(&wv3)))
-        wv3->SetVirtualHostNameToFolderMapping(kVirtualHost, g_webDir.c_str(),
-                                               COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
-
     EventRegistrationToken token;
+    if (!g_webDir.empty()) {
+        // Разработка: интерфейс прямо из папки web/, правки видны после перезагрузки.
+        if (ComPtr<ICoreWebView2_3> wv3; SUCCEEDED(g_webview.As(&wv3)))
+            wv3->SetVirtualHostNameToFolderMapping(kVirtualHost, g_webDir.c_str(),
+                                                   COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
+    } else {
+        // Установленная программа: интерфейс отдаётся из ресурсов exe.
+        g_webview->AddWebResourceRequestedFilter((std::wstring(L"https://") + kVirtualHost + L"/*").c_str(),
+                                                 COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+        g_webview->add_WebResourceRequested(
+            Callback<ICoreWebView2WebResourceRequestedEventHandler>(
+                [](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                    ComPtr<ICoreWebView2WebResourceRequest> request;
+                    args->get_Request(&request);
+                    LPWSTR rawUri = nullptr;
+                    request->get_Uri(&rawUri);
+                    std::wstring uri = rawUri ? rawUri : L"";
+                    CoTaskMemFree(rawUri);
+                    const std::wstring prefix = std::wstring(L"https://") + kVirtualHost + L"/";
+                    std::string name = WideToUtf8(uri.rfind(prefix, 0) == 0 ? uri.substr(prefix.size()) : L"");
+                    name = name.substr(0, name.find_first_of("?#"));
+                    if (name.empty()) name = "index.html";
+
+                    ComPtr<ICoreWebView2WebResourceResponse> response;
+                    auto it = g_embedded.find(name);
+                    if (it != g_embedded.end()) {
+                        ComPtr<IStream> stream;
+                        stream.Attach(SHCreateMemStream(it->second.data, it->second.size));
+                        std::wstring headers = std::wstring(L"Content-Type: ") + MimeType(name) + L"\r\nCache-Control: no-store";
+                        g_env->CreateWebResourceResponse(stream.Get(), 200, L"OK", headers.c_str(), &response);
+                    } else {
+                        g_env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", &response);
+                    }
+                    args->put_Response(response.Get());
+                    return S_OK;
+                })
+                .Get(),
+            &token);
+    }
+
     g_webview->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
             [](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
@@ -539,6 +668,7 @@ void CreateWebView() {
                     PostQuitMessage(1);
                     return S_OK;
                 }
+                g_env = env;
                 env->CreateCoreWebView2Controller(
                     g_hwnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(OnControllerCreated).Get());
                 return S_OK;
@@ -602,6 +732,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             mmi->ptMinTrackSize = {640, 400};
             return 0;
         }
+        case WM_APP_UPDATE_READY: {
+            std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lp));
+            g_updateInProgress = false;
+            if (!path) return 0;
+            std::wstring error;
+            if (!LaunchUpdater(*path, &error)) {
+                PostToWeb({{"type", "updateError"}, {"message", WideToUtf8(error)}});
+                return 0;
+            }
+            // Пользователь уже подтвердил в интерфейсе — закрываемся без вопросов, установщик дождётся выхода.
+            SaveWindowPlacement();
+            DestroyWindow(hwnd);
+            return 0;
+        }
         case WM_CLOSE: {
             const int live = LiveSessionCount();
             if (live > 0) {
@@ -614,6 +758,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         }
+        default:
+            if (msg == QuitForUpdateMessage()) {
+                SaveWindowPlacement();
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
         case WM_DESTROY:
             g_sessions.clear();
             g_controller.Reset();
@@ -643,8 +794,19 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
         g_dataDir = appData.empty() ? ExeDir() / L"data" : appData / L"CMDManager";
     }
     std::error_code ec;
-    fs::create_directories(g_dataDir, ec);
     g_webDir = FindWebDir();
+
+    // Установка / обновление / удаление (один exe в релизе — он же установщик).
+    if (int code = 0; RunInstallerIfNeeded(hInst, !g_webDir.empty(), &code)) {
+        CoUninitialize();
+        return code;
+    }
+    fs::create_directories(g_dataDir, ec);
+    if (g_webDir.empty() && !LoadEmbeddedWeb()) {
+        MessageBoxW(nullptr, L"Повреждён файл программы: не найден встроенный интерфейс. Скачайте установщик заново.",
+                    kAppTitle, MB_ICONERROR | MB_OK);
+        return 1;
+    }
 
     // Окружение для дочерних консолей: полноцветный вывод; убираем маркеры «вложенного» Claude Code,
     // если сам менеджер был запущен из сессии Claude.
@@ -683,10 +845,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
     ShowWindow(g_hwnd, show == SW_SHOWDEFAULT ? nCmdShow : show);
     UpdateWindow(g_hwnd);
 
-    if (!fs::exists(g_webDir / L"index.html", ec)) {
-        ShowFatal(L"Не найдена папка интерфейса web\\ рядом с программой:\n" + g_webDir.wstring());
-        return 1;
-    }
     CreateWebView();
 
     MSG msg;

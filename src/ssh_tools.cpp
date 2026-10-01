@@ -376,6 +376,30 @@ json SshMakeDir(const SshTarget& t, const std::string& keyPath, const std::strin
     return {{"path", Trim(r.output)}};
 }
 
+json SshDetectCommands(const SshTarget& t, const std::string& keyPath, const std::vector<std::string>& names) {
+    if (std::string err = ValidateTarget(t); !err.empty()) return {{"error", err}};
+    std::string list;
+    for (const auto& n : names) {
+        const bool safe = !n.empty() && n.size() < 40 && std::all_of(n.begin(), n.end(), [](char c) {
+            return isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.';
+        });
+        if (safe) list += " " + n;
+    }
+    if (list.empty()) return {{"found", json::array()}};
+    // Интерактивная login-оболочка — чтобы подхватились PATH из ~/.profile и ~/.bashrc (npm, nvm, ~/.local/bin).
+    const std::string inner = "for c in" + list + "; do command -v \"$c\" >/dev/null 2>&1 && echo \"CMDM_FOUND:$c\"; done";
+    RunResult r = RunRemote(t, keyPath, "exec \"$SHELL\" -lic " + ShQuote(inner) + " 2>/dev/null", 30000);
+    if (r.timedOut) return {{"error", "Сервер не ответил вовремя"}};
+    json found = json::array();
+    std::istringstream lines(r.output);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("CMDM_FOUND:", 0) == 0) found.push_back(line.substr(11));
+    }
+    return {{"found", found}};
+}
+
 bool RunAsAskpassIfRequested(int* exitCode) {
     wchar_t flag[4];
     if (GetEnvironmentVariableW(L"CMDM_ASKPASS", flag, 4) == 0) return false;

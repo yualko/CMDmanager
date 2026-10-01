@@ -46,5 +46,9 @@ nlohmann::json SshListDir(const SshTarget& target, const std::string& keyPath, c
 nlohmann::json SshMakeDir(const SshTarget& target, const std::string& keyPath, const std::string& parent,
                           const std::string& name);
 
+// Какие из команд names установлены на сервере (проверка через login-оболочку пользователя): { found: [...] } | { error }.
+nlohmann::json SshDetectCommands(const SshTarget& target, const std::string& keyPath,
+                                 const std::vector<std::string>& names);
+
 // Режим SSH_ASKPASS: если процесс запущен ssh как askpass-программа, печатает пароль и возвращает true.
 bool RunAsAskpassIfRequested(int* exitCode);

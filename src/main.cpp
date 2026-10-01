@@ -428,7 +428,22 @@ void HandleWebMessage(const std::string& text) {
         std::wstring path =
             PickFolder(Utf8ToWide(m.value("title", std::string("Выберите папку"))), Utf8ToWide(m.value("initial", std::string())));
         Reply(m, {{"path", path.empty() ? json(nullptr) : json(WideToUtf8(path))}});
-    } else if (type == "sshConnect" || type == "sshListDir" || type == "sshMkdir") {
+    } else if (type == "whichAll") {
+        // Какие программы есть в PATH (ищем .exe, .cmd, .bat — так ставятся npm-пакеты и установщики агентов).
+        json found = json::array();
+        for (const auto& n : m.value("names", json::array())) {
+            if (!n.is_string()) continue;
+            const std::wstring name = Utf8ToWide(n.get<std::string>());
+            for (const wchar_t* ext : {L".exe", L".cmd", L".bat"}) {
+                wchar_t buf[MAX_PATH];
+                if (SearchPathW(nullptr, name.c_str(), ext, MAX_PATH, buf, nullptr) > 0) {
+                    found.push_back(n);
+                    break;
+                }
+            }
+        }
+        Reply(m, {{"found", found}});
+    } else if (type == "sshConnect" || type == "sshListDir" || type == "sshMkdir" || type == "sshDetectAgents") {
         // SSH-операции занимают секунды — выполняем в фоне, ответ присылаем через WM_APP_POST.
         SshTarget target{m.value("host", std::string()), m.value("port", 22), m.value("user", std::string())};
         std::thread([m, type, target] {
@@ -437,6 +452,11 @@ void HandleWebMessage(const std::string& text) {
                 wchar_t exe[MAX_PATH * 2];
                 DWORD n = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
                 r = SshConnect(target, m.value("password", std::string()), std::wstring(exe, n));
+            } else if (type == "sshDetectAgents") {
+                std::vector<std::string> names;
+                for (const auto& n : m.value("names", json::array()))
+                    if (n.is_string()) names.push_back(n.get<std::string>());
+                r = SshDetectCommands(target, m.value("keyPath", std::string()), names);
             } else if (type == "sshListDir") {
                 r = SshListDir(target, m.value("keyPath", std::string()), m.value("path", std::string("~")));
             } else {

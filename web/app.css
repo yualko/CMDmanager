@@ -383,3 +383,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .ov-grid input { height: 28px; padding: 0 6px; min-width: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: 11.5px var(--mono-font); }
 .ov-grid input::placeholder { color: var(--text-faint); }
 .modal { width: min(560px, 100%); }
+
+/* ---------- консоли без агента ---------- */
+.tag.console { background: rgba(154, 156, 171, .16); color: var(--text-dim); }
+#btn-new-console { align-self: center; }

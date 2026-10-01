@@ -969,7 +969,8 @@ function renderProjects() {
       el('span', {}, p.name),
       p.ssh ? el('span', { class: 'tag', title: p.claudeAt === 'local' ? 'Проект на сервере, агент работает на этом компьютере' : 'Проект на сервере, агент на сервере' },
         p.claudeAt === 'local' ? 'SSH · локально' : 'SSH') : null,
-      launchAgentShort(p.launch || state.settings.defaultLaunch) ? el('span', { class: 'tag agent', title: 'ИИ-агент проекта' }, launchAgentShort(p.launch || state.settings.defaultLaunch)) : null,
+      launchAgentShort(p.launch || state.settings.defaultLaunch) ? el('span', { class: 'tag agent', title: 'ИИ-агент проекта' }, launchAgentShort(p.launch || state.settings.defaultLaunch))
+        : normalizeLaunch(p.launch || state.settings.defaultLaunch).mode === 'shell' ? el('span', { class: 'tag console', title: 'Только консоль, без ИИ-агента' }, 'Консоль') : null,
       attention ? el('span', { class: 'dot attention', title: 'Агент ждёт' }) : null),
     el('div', {},
       open.length ? el('span', { class: 'open-count', title: 'Открытых консолей' }, open.length) : null,
@@ -1244,7 +1245,8 @@ const remoteBaseName = (path) => (path === '/' ? '/' : path.replace(/\/+$/, '').
 
 // Шаг 1: подключение к серверу (ключ создаётся и при необходимости ставится по паролю).
 // С project — переподключение существующего проекта (например, после смены сервера); затем сразу открываем консоль.
-function sshConnectDialog({ project = null } = {}) {
+// consoleOnly — подключение без ИИ-агента (просто оболочка сервера, например чтобы смотреть логи).
+function sshConnectDialog({ project = null, consoleOnly = false } = {}) {
   openModal((modal, close) => {
     const ssh = project?.ssh;
     const host = el('input', { type: 'text', class: 'mono', value: ssh?.host || '', placeholder: '192.168.1.10 или example.com', autofocus: !ssh, spellcheck: 'false' });
@@ -1288,7 +1290,8 @@ function sshConnectDialog({ project = null } = {}) {
         openProject(project, { forceNew: true });
         return;
       }
-      sshFolderStep(modal, close, ctx);
+      if (consoleOnly) sshConsoleStep(modal, close, ctx);
+      else sshFolderStep(modal, close, ctx);
     } },
       el('div', { class: 'field' }, el('label', {}, 'Сервер и порт'), el('div', { class: 'row' }, host, port)),
       el('div', { class: 'field' }, el('label', {}, 'Пользователь'), user),
@@ -1296,7 +1299,7 @@ function sshConnectDialog({ project = null } = {}) {
         el('div', { class: 'hint' }, 'Нужен только при первом подключении — чтобы установить ключ ~/.ssh/id_ed25519_<сервер>. Нигде не сохраняется. Если вход по ключу уже настроен, оставьте пустым.')),
       status, error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), submit));
-    modal.append(el('h2', {}, project ? `Подключение: ${project.name}` : 'Проект на сервере (SSH)'),
+    modal.append(el('h2', {}, project ? `Подключение: ${project.name}` : consoleOnly ? 'SSH-подключение' : 'Проект на сервере (SSH)'),
       el('div', { class: 'modal-sub' }, project ? 'Сервер не принимает ключ — нужен пароль, чтобы установить его.' : 'Шаг 1 из 2 — подключение к серверу'), form);
   });
 }
@@ -1321,21 +1324,28 @@ function remoteBrowser(ctx, startPath, onChange) {
     list.replaceChildren(...items);
   };
 
+  // Переход в папку; true — успешно. Параллельные переходы выполняются по очереди.
+  let pending = null;
   async function go(path) {
-    if (busy) return;
+    while (pending) await pending;
+    pending = navigate(path);
+    try { return await pending; } finally { pending = null; }
+  }
+  async function navigate(path) {
     busy = true;
     list.classList.add('loading');
     error.textContent = '';
     const r = await native.request('sshListDir', { ...ctx, path });
     busy = false;
     list.classList.remove('loading');
-    if (r.error) { error.textContent = r.error; pathInput.value = current; return; }
+    if (r.error) { error.textContent = r.error; pathInput.value = current; return false; }
     current = r.path;
     dirs = r.dirs || [];
     pathInput.value = current;
     render();
     list.scrollTop = 0;
     onChange?.(current);
+    return true;
   }
 
   pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(pathInput.value.trim() || '~'); } });
@@ -1364,7 +1374,16 @@ function remoteBrowser(ctx, startPath, onChange) {
       el('button', { type: 'button', class: 'btn ghost', onclick: () => { createRow.hidden = !createRow.hidden; if (!createRow.hidden) newName.focus(); } }, icon(ICONS.plus), 'Новая папка')),
     createRow, error);
   go(startPath || '~');
-  return { node, getPath: () => current };
+  return {
+    node,
+    getPath: () => current,
+    // Итоговая папка: если путь введён вручную и не подтверждён Enter — сначала переходим по нему.
+    async resolve() {
+      const typed = pathInput.value.trim();
+      if (typed && typed !== current && !(await go(typed))) return null;
+      return current || null;
+    },
+  };
 }
 
 // Шаг 2: выбор папки на сервере, название и вариант запуска.
@@ -1387,9 +1406,9 @@ function sshFolderStep(modal, close, ctx) {
   detectRemoteAgents(ctx).then((set) => { if (set) placement.setRemoteAgents(set); });
   const error = el('div', { class: 'modal-error' });
 
-  const form = el('form', { onsubmit: (e) => {
+  const form = el('form', { onsubmit: async (e) => {
     e.preventDefault();
-    const dir = browser.getPath();
+    const dir = await browser.resolve();
     if (!dir) return;
     const ssh = { ...ctx, dir };
     const label = sshLabel(ssh);
@@ -1413,6 +1432,62 @@ function sshFolderStep(modal, close, ctx) {
     el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'),
       el('button', { type: 'submit', class: 'btn primary' }, 'Открыть здесь')));
   modal.replaceChildren(el('h2', {}, `${ctx.user}@${ctx.host}`), el('div', { class: 'modal-sub' }, 'Шаг 2 из 2 — выберите папку проекта'), form);
+}
+
+// Шаг 2 для SSH-консоли: папка, где окажемся после входа, и сохранять ли подключение в списке.
+function sshConsoleStep(modal, close, ctx) {
+  const name = el('input', { type: 'text', value: `${ctx.user}@${ctx.host}`, spellcheck: 'false' });
+  let nameTouched = false;
+  name.addEventListener('input', () => { nameTouched = true; });
+  const browser = remoteBrowser(ctx, '~', (path) => {
+    if (!nameTouched) name.value = `${ctx.host}:${path === '/' ? '/' : remoteBaseName(path)}`;
+  });
+  const save = el('input', { type: 'checkbox', checked: true });
+  const form = el('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    const dir = await browser.resolve();
+    if (!dir) return;
+    const ssh = { ...ctx, dir };
+    close();
+    if (!save.checked) {
+      openTerminal({ name: name.value.trim() || `${ctx.user}@${ctx.host}`, path: sshLabel(ssh), ssh });
+      return;
+    }
+    const label = sshLabel(ssh);
+    let p = findProjectByPath(label);
+    if (!p) p = addProject(name.value.trim() || `${ctx.user}@${ctx.host}`, label);
+    else if (name.value.trim()) p.name = name.value.trim();
+    p.ssh = ssh;
+    p.claudeAt = 'remote';
+    p.launch = { agent: 'claude', mode: 'shell', custom: '', cont: false };
+    openProject(p, { forceNew: true });
+    saveState();
+  } },
+    browser.node,
+    el('div', { class: 'field' }, el('label', {}, 'Название'), name),
+    el('label', { class: 'check' }, save, 'Сохранить в списке, чтобы потом подключаться одним кликом'),
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'),
+      el('button', { type: 'submit', class: 'btn primary' }, 'Подключиться')));
+  modal.replaceChildren(el('h2', {}, `${ctx.user}@${ctx.host}`),
+    el('div', { class: 'modal-sub' }, 'Шаг 2 из 2 — в какой папке открыть консоль (например, /var/log)'), form);
+}
+
+// ---------- консоли без проекта и без агента ----------
+// Сессия, не привязанная к проекту: локальный PowerShell или ssh на сервер.
+function openTerminal({ name, path, ssh = null }) {
+  addSession({ projectId: null, name, path, ssh: ssh ? { ...ssh } : null, command: '', agent: null });
+}
+
+function openLocalConsole() {
+  openTerminal({ name: 'PowerShell', path: env.home || 'C:\\' });
+}
+
+function newConsoleMenu(anchor) {
+  const r = anchor.getBoundingClientRect();
+  showMenu([
+    { icon: ICONS.terminal, label: 'PowerShell (Ctrl+Shift+T)', action: openLocalConsole },
+    { icon: ICONS.server, label: 'SSH-подключение…', action: () => sshConnectDialog({ consoleOnly: true }) },
+  ], r.left, r.bottom + 4);
 }
 
 async function openLocalFolderFlow() {
@@ -1495,7 +1570,7 @@ function editSshProjectDialog(p) {
       if (!sameServer() || !p.ssh.keyPath) { error.textContent = 'Сначала сохраните новые параметры сервера и подключитесь — затем можно выбирать папку.'; return; }
       openModal((m2, close2) => {
         const browser = remoteBrowser({ ...sshTarget(p.ssh), keyPath: p.ssh.keyPath }, dir.value.trim() || '~');
-        m2.append(el('h2', {}, 'Папка на сервере'), el('form', { onsubmit: (e) => { e.preventDefault(); dir.value = browser.getPath() || dir.value; close2(); } },
+        m2.append(el('h2', {}, 'Папка на сервере'), el('form', { onsubmit: async (e) => { e.preventDefault(); const chosen = await browser.resolve(); if (!chosen) return; dir.value = chosen; dir.dispatchEvent(new Event('input')); close2(); } },
           browser.node,
           el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close2 }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Выбрать'))));
         m2.querySelector('form').addEventListener('submit', () => placement.refresh());
@@ -1635,6 +1710,7 @@ function handleAppShortcut(e) {
       case 'KeyW': return activeId != null ? run(() => closeSession(activeId)) : false;
       case 'KeyN': return run(createProjectDialog);
       case 'KeyO': return run(openProjectFlow);
+      case 'KeyT': return run(openLocalConsole);
       case 'KeyB': return run(toggleSidebar);
       case 'Enter': return activeId != null ? run(() => toggleZoom(activeId)) : false;
     }
@@ -1718,12 +1794,14 @@ document.querySelector('.credits a').addEventListener('click', (e) => {
 $('#btn-create').addEventListener('click', createProjectDialog);
 $('#btn-open').addEventListener('click', openProjectFlow);
 $('#btn-settings').addEventListener('click', settingsDialog);
+$('#btn-new-console').addEventListener('click', (e) => newConsoleMenu(e.currentTarget));
 $('#btn-sidebar').addEventListener('click', toggleSidebar);
 $('#search').addEventListener('input', (e) => { search = e.target.value; renderProjects(); });
 $('#welcome').addEventListener('click', (e) => {
   const a = e.target.closest('[data-action]')?.dataset.action;
   if (a === 'create') createProjectDialog();
   if (a === 'open') openProjectFlow();
+  if (a === 'console') newConsoleMenu(e.target.closest('[data-action]'));
 });
 setInterval(renderProjects, 60_000);  // обновить «N мин назад»
 

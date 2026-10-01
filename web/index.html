@@ -45,6 +45,9 @@
           <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
         </button>
         <div id="tabs" role="tablist"></div>
+        <button id="btn-new-console" class="icon-btn" title="Новая консоль: PowerShell или SSH (Ctrl+Shift+T)">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
         <div id="layouts" title="Сколько консолей показывать одновременно"></div>
       </header>
       <section id="grid"></section>
@@ -55,11 +58,13 @@
           <div class="welcome-actions">
             <button class="btn primary big" data-action="create">Создать проект</button>
             <button class="btn big" data-action="open">Открыть проект</button>
+            <button class="btn big" data-action="console">Консоль / SSH</button>
           </div>
           <div id="welcome-recent"></div>
           <dl class="hotkeys">
             <dt>Ctrl+Tab</dt><dd>следующая вкладка</dd>
             <dt>Ctrl+1…9</dt><dd>перейти к вкладке</dd>
+            <dt>Ctrl+Shift+T</dt><dd>новая консоль PowerShell</dd>
             <dt>Ctrl+Shift+W</dt><dd>закрыть консоль</dd>
             <dt>Shift+Enter</dt><dd>новая строка в агенте</dd>
             <dt>Ctrl+= / Ctrl+−</dt><dd>размер шрифта</dd>

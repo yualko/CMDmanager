@@ -172,32 +172,61 @@ function sshConnectArgs(ssh, command) {
   return args;
 }
 
-// Однократная установка публичного ключа: вход по паролю, дописываем ключ в authorized_keys (без дублей).
-function sshInstallArgs(ssh, publicKey) {
-  const k = shQuote(publicKey);
-  const script = `umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && ` +
-    `(grep -qxF ${k} ~/.ssh/authorized_keys || echo ${k} >> ~/.ssh/authorized_keys)`;
-  return [...sshCommonArgs(ssh), '-o', 'PubkeyAuthentication=no', '-o', 'PreferredAuthentications=keyboard-interactive,password',
-    '-l', ssh.user, ssh.host, script];
-}
-
 function sshLabel(ssh) {
   return `${ssh.user}@${ssh.host}${Number(ssh.port) && Number(ssh.port) !== 22 ? `:${ssh.port}` : ''}:${ssh.dir || '~'}`;
 }
 
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g, '');
+// Варианты запуска Claude на сервере. Под root Claude отказывается работать с --dangerously-skip-permissions,
+// если не выставлен IS_SANDBOX=1.
+const SSH_LAUNCH_MODES = [
+  { id: 'skip', label: 'Claude без подтверждений', cmd: 'claude --dangerously-skip-permissions' },
+  { id: 'sandbox', label: 'Claude без подтверждений под root (IS_SANDBOX=1)', cmd: 'IS_SANDBOX=1 claude --dangerously-skip-permissions' },
+  { id: 'normal', label: 'Claude с подтверждениями', cmd: 'claude' },
+  { id: 'shell', label: 'Только консоль', cmd: '' },
+  { id: 'custom', label: 'Своя команда…', cmd: null },
+];
+
+function defaultLaunch(user) {
+  return { mode: user === 'root' ? 'sandbox' : 'skip', custom: '', cont: false };
+}
+
+function launchCommand(launch) {
+  if (launch.mode === 'custom') return (launch.custom || '').trim();
+  const mode = SSH_LAUNCH_MODES.find((m) => m.id === launch.mode) || SSH_LAUNCH_MODES[0];
+  if (!mode.cmd) return '';
+  return launch.cont ? mode.cmd.replace(/\bclaude\b/, 'claude --continue') : mode.cmd;
+}
+
+// Поля «как запускать Claude»: список вариантов, своя команда, «продолжить разговор».
+function launchControls(launch) {
+  const select = el('select', {}, SSH_LAUNCH_MODES.map((m) => el('option', { value: m.id, selected: m.id === launch.mode }, m.label)));
+  const custom = el('input', { type: 'text', class: 'mono', value: launch.custom || '', placeholder: 'IS_SANDBOX=1 claude --dangerously-skip-permissions', spellcheck: 'false' });
+  const cont = el('input', { type: 'checkbox', checked: !!launch.cont });
+  const contLabel = el('label', { class: 'check' }, cont, 'Продолжить прошлый разговор (--continue)');
+  const preview = el('div', { class: 'preview-path' });
+  const read = () => ({ mode: select.value, custom: custom.value.trim(), cont: cont.checked });
+  const update = () => {
+    custom.hidden = select.value !== 'custom';
+    contLabel.hidden = select.value === 'custom' || select.value === 'shell';
+    const cmd = launchCommand(read());
+    preview.textContent = cmd ? `$ ${cmd}` : 'Откроется только консоль';
+  };
+  select.addEventListener('change', () => { update(); if (select.value === 'custom') custom.focus(); });
+  custom.addEventListener('input', update);
+  cont.addEventListener('change', update);
+  update();
+  const node = el('div', { class: 'field' }, el('label', {}, 'Запуск на сервере'), select, custom, contLabel, preview);
+  return { node, read, setMode: (id) => { select.value = id; update(); } };
+}
 
 class Session {
-  constructor({ projectId, name, path, command, ssh = null, install = null }) {
+  constructor({ projectId, name, path, command, ssh = null }) {
     this.id = nextSessionId++;
     this.projectId = projectId;
     this.name = name;
     this.path = path;
     this.command = command;
     this.ssh = ssh;            // { host, port, user, dir, keyPath } для проектов на сервере
-    this.install = install;    // { publicKey, password } — если ключ ещё надо установить на сервер
-    this.phase = install ? 'install' : 'main';
-    this.outTail = '';
     this.status = 'starting';  // starting | running | exited
     this.title = '';
     this.attention = false;
@@ -251,11 +280,6 @@ class Session {
     const base = { type: 'spawn', id: this.id, cols: this.cols || 120, rows: this.rows || 30 };
     if (!this.ssh) {
       native.send({ ...base, cwd: this.path, shell: state.settings.shell, command: this.command });
-    } else if (this.phase === 'install') {
-      this.term.write(`\x1b[36mУстанавливаю ключ на ${this.ssh.user}@${this.ssh.host}.` +
-        `${this.install.password ? '' : ' Введите пароль от сервера, когда он попросит.'}\x1b[0m\r\n`);
-      this.outTail = '';
-      native.send({ ...base, cwd: env.home, program: 'ssh', args: sshInstallArgs(this.ssh, this.install.publicKey) });
     } else {
       native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command) });
     }
@@ -279,14 +303,6 @@ class Session {
 
   onOutput(data) {
     this.term.write(data);
-    // Пароль из диалога подставляем один раз — на первый запрос сервера.
-    if (this.phase === 'install' && this.install?.password) {
-      this.outTail = (this.outTail + data).slice(-400);
-      if (/password[^\n]*:\s*$/i.test(stripAnsi(this.outTail))) {
-        native.send({ type: 'input', id: this.id, data: `${this.install.password}\r` });
-        this.install.password = '';
-      }
-    }
     const now = performance.now();
     this.lastOutput = now;
     // Эхо набранного текста не считаем «работой».
@@ -300,21 +316,6 @@ class Session {
   onExit(code) {
     this.status = 'exited';
     this.busy = false;
-    if (this.phase === 'install') {
-      if (code === 0) {
-        // Ключ установлен — в этой же вкладке подключаемся уже по ключу.
-        this.term.write('\x1b[32mКлюч установлен, дальше вход без пароля. Подключаюсь…\x1b[0m\r\n');
-        this.phase = 'main';
-        this.install = null;
-        this.start();
-        renderAll();
-        return;
-      }
-      this.term.write(`\r\n\x1b[31mНе удалось установить ключ (код ${code}). Проверьте пароль и что сервер разрешает вход по паролю.\x1b[0m\r\n` +
-        '\x1b[90m[Enter — повторить, Ctrl+Shift+W — закрыть вкладку]\x1b[0m\r\n');
-      renderAll();
-      return;
-    }
     const what = this.ssh ? 'Соединение закрыто' : 'Процесс завершён';
     this.term.write(`\r\n\x1b[90m[${what}, код ${code}. Enter — ${this.ssh ? 'переподключиться' : 'перезапустить'}, Ctrl+Shift+W — закрыть вкладку]\x1b[0m\r\n`);
     renderAll();
@@ -792,7 +793,7 @@ function addProject(name, path) {
   return p;
 }
 
-async function openProject(p, { forceNew = false, plain = false, install = null } = {}) {
+async function openProject(p, { forceNew = false, plain = false } = {}) {
   if (!forceNew && !plain) {
     const open = projectSessions(p);
     if (open.length) {
@@ -803,18 +804,19 @@ async function openProject(p, { forceNew = false, plain = false, install = null 
   if (!p.ssh && missingPaths.has(normPath(p.path))) {
     toast(`Папка не найдена: ${p.path}`, 'error');
   }
-  // Параметры подключения менялись (или ключ ещё не готовился) — сначала готовим ключ.
-  if (p.ssh && !p.ssh.keyPath && !install) {
+  // Параметры подключения менялись (или ключ ещё не готовился) — сначала подключаемся и готовим ключ.
+  if (p.ssh && !p.ssh.keyPath) {
     toast(`Подключаюсь к ${p.ssh.host}…`);
-    const r = await native.request('sshPrepare', { host: p.ssh.host, port: Number(p.ssh.port) || 22, user: p.ssh.user });
+    const r = await native.request('sshConnect', sshTarget(p.ssh));
+    if (r.needsPassword) { sshConnectDialog({ project: p }); return; }
     if (r.error) { toast(r.error, 'error'); return; }
     p.ssh.keyPath = r.keyPath;
-    if (r.needsInstall) install = { publicKey: r.publicKey, password: '' };
   }
   p.lastOpened = Date.now();
   p.openCount = (p.openCount || 0) + 1;
-  const command = plain ? '' : (p.command || state.settings.command || '').trim();
-  addSession({ projectId: p.id, name: p.name, path: p.path, command, ssh: p.ssh ? { ...p.ssh } : null, install });
+  let command = '';
+  if (!plain) command = p.ssh ? launchCommand(p.launch || defaultLaunch(p.ssh.user)) : (p.command || state.settings.command || '').trim();
+  addSession({ projectId: p.id, name: p.name, path: p.path, command, ssh: p.ssh ? { ...p.ssh } : null });
   saveState();
 }
 
@@ -975,21 +977,25 @@ function openProjectFlow() {
     modal.append(el('h2', {}, 'Открыть проект'), el('div', { class: 'choice' },
       card(ICONS.folder, 'Папка на компьютере', 'Выбрать существующую папку', openLocalFolderFlow, false),
       card(ICONS.server, 'Сервер по SSH', env.hasSsh ? 'Подключиться к серверу, ключ создадим автоматически' : 'Не найден клиент OpenSSH (ssh.exe)',
-        sshProjectDialog, !env.hasSsh)));
+        () => sshConnectDialog(), !env.hasSsh)));
   });
 }
 
-function sshProjectDialog() {
+const sshTarget = (ssh) => ({ host: ssh.host, port: Number(ssh.port) || 22, user: ssh.user });
+const remoteBaseName = (path) => (path === '/' ? '/' : path.replace(/\/+$/, '').split('/').pop());
+
+// Шаг 1: подключение к серверу (ключ создаётся и при необходимости ставится по паролю).
+// С project — переподключение существующего проекта (например, после смены сервера); затем сразу открываем консоль.
+function sshConnectDialog({ project = null } = {}) {
   openModal((modal, close) => {
-    const name = el('input', { type: 'text', placeholder: 'Например: Бот на сервере', spellcheck: 'false' });
-    const host = el('input', { type: 'text', class: 'mono', placeholder: '192.168.1.10 или example.com', autofocus: true, spellcheck: 'false' });
-    const port = el('input', { type: 'number', min: 1, max: 65535, value: 22, class: 'port' });
-    const user = el('input', { type: 'text', class: 'mono', placeholder: 'root', spellcheck: 'false' });
-    const dir = el('input', { type: 'text', class: 'mono', placeholder: '~/projects/my-app', spellcheck: 'false' });
-    const password = el('input', { type: 'password', autocomplete: 'new-password' });
+    const ssh = project?.ssh;
+    const host = el('input', { type: 'text', class: 'mono', value: ssh?.host || '', placeholder: '192.168.1.10 или example.com', autofocus: !ssh, spellcheck: 'false' });
+    const port = el('input', { type: 'number', min: 1, max: 65535, value: ssh?.port || 22, class: 'port' });
+    const user = el('input', { type: 'text', class: 'mono', value: ssh?.user || '', placeholder: 'root', spellcheck: 'false' });
+    const password = el('input', { type: 'password', autocomplete: 'new-password', autofocus: !!ssh });
     const status = el('div', { class: 'hint' });
     const error = el('div', { class: 'modal-error' });
-    const submit = el('button', { type: 'submit', class: 'btn primary' }, 'Подключить');
+    const submit = el('button', { type: 'submit', class: 'btn primary' }, 'Подключиться');
 
     // Можно вставить «user@host» или «user@host:port» целиком в поле сервера.
     host.addEventListener('change', () => {
@@ -1000,40 +1006,140 @@ function sshProjectDialog() {
     const form = el('form', { onsubmit: async (e) => {
       e.preventDefault();
       error.textContent = '';
-      const h = host.value.trim(), u = user.value.trim() || 'root', d = dir.value.trim() || '~';
-      const pt = Number(port.value) || 22;
-      if (!h) { error.textContent = 'Укажите адрес сервера'; host.focus(); return; }
+      const target = { host: host.value.trim(), port: Number(port.value) || 22, user: user.value.trim() || 'root' };
+      if (!target.host) { error.textContent = 'Укажите адрес сервера'; host.focus(); return; }
       submit.disabled = true;
-      status.textContent = 'Готовлю ключ и проверяю подключение…';
-      const r = await native.request('sshPrepare', { host: h, port: pt, user: u });
+      status.textContent = password.value ? 'Подключаюсь и устанавливаю ключ…' : 'Подключаюсь…';
+      const r = await native.request('sshConnect', { ...target, password: password.value });
       submit.disabled = false;
       status.textContent = '';
+      if (r.needsPassword) {
+        error.textContent = 'Сервер пока не знает ключ этого компьютера. Введите пароль один раз — ключ установится, дальше вход без пароля.';
+        password.focus();
+        return;
+      }
       if (r.error) { error.textContent = r.error; return; }
-
-      const ssh = { host: h, port: pt, user: u, dir: d, keyPath: r.keyPath };
-      const label = sshLabel(ssh);
-      let p = findProjectByPath(label);
-      if (!p) p = addProject(name.value.trim() || `${h}:${d}`, label);
-      else if (name.value.trim()) p.name = name.value.trim();
-      p.ssh = ssh;
-      close();
+      password.value = '';
       if (r.keyCreated) toast(`Создан ключ ${r.keyPath}`);
-      if (r.authOk) toast('Сервер уже принимает этот ключ — вход без пароля');
-      openProject(p, { forceNew: true, install: r.needsInstall ? { publicKey: r.publicKey, password: password.value } : null });
-      saveState();
+      if (r.keyInstalled) toast('Ключ установлен на сервер — дальше вход без пароля');
+      const ctx = { ...target, keyPath: r.keyPath };
+      if (project) {
+        project.ssh = { ...project.ssh, ...ctx };
+        close();
+        saveState();
+        openProject(project, { forceNew: true });
+        return;
+      }
+      sshFolderStep(modal, close, ctx);
     } },
-      el('div', { class: 'field' }, el('label', {}, 'Название проекта'), name),
       el('div', { class: 'field' }, el('label', {}, 'Сервер и порт'), el('div', { class: 'row' }, host, port)),
       el('div', { class: 'field' }, el('label', {}, 'Пользователь'), user),
-      el('div', { class: 'field' }, el('label', {}, 'Папка на сервере'), dir,
-        el('div', { class: 'hint' }, 'Там откроется консоль и запустится claude (он должен быть установлен на сервере).')),
       el('div', { class: 'field' }, el('label', {}, 'Пароль'), password,
-        el('div', { class: 'hint' }, 'Нужен один раз — чтобы установить ключ на сервер. Нигде не сохраняется. Если вход по ключу уже настроен, оставьте пустым.')),
+        el('div', { class: 'hint' }, 'Нужен только при первом подключении — чтобы установить ключ ~/.ssh/id_ed25519_<сервер>. Нигде не сохраняется. Если вход по ключу уже настроен, оставьте пустым.')),
       status, error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), submit));
-    modal.append(el('h2', {}, 'Проект на сервере (SSH)'),
-      el('div', { class: 'modal-sub' }, 'Будет создан ключ ~/.ssh/id_ed25519_<сервер> и добавлен на сервер — дальше подключение без пароля.'), form);
+    modal.append(el('h2', {}, project ? `Подключение: ${project.name}` : 'Проект на сервере (SSH)'),
+      el('div', { class: 'modal-sub' }, project ? 'Сервер не принимает ключ — нужен пароль, чтобы установить его.' : 'Шаг 1 из 2 — подключение к серверу'), form);
   });
+}
+
+// Обзор папок на сервере. onChange(path) вызывается при каждом переходе.
+function remoteBrowser(ctx, startPath, onChange) {
+  let current = '';
+  let busy = false;
+  const pathInput = el('input', { type: 'text', class: 'mono', spellcheck: 'false' });
+  const list = el('div', { class: 'rb-list', role: 'listbox' });
+  const showHidden = el('input', { type: 'checkbox' });
+  const error = el('div', { class: 'modal-error' });
+  let dirs = [];
+
+  const render = () => {
+    const visible = dirs.filter((d) => showHidden.checked || !d.startsWith('.')).sort((a, b) => a.localeCompare(b, 'ru'));
+    const item = (label, target, cls = '') => el('button', { type: 'button', class: `rb-item ${cls}`, onclick: () => go(target) }, icon(ICONS.folder), label);
+    const items = [];
+    if (current !== '/') items.push(item('..', current.replace(/\/[^/]+\/?$/, '') || '/', 'up'));
+    for (const d of visible) items.push(item(d, `${current === '/' ? '' : current}/${d}`));
+    if (!visible.length) items.push(el('div', { class: 'rb-empty' }, dirs.length ? 'Только скрытые папки' : 'Подпапок нет'));
+    list.replaceChildren(...items);
+  };
+
+  async function go(path) {
+    if (busy) return;
+    busy = true;
+    list.classList.add('loading');
+    error.textContent = '';
+    const r = await native.request('sshListDir', { ...ctx, path });
+    busy = false;
+    list.classList.remove('loading');
+    if (r.error) { error.textContent = r.error; pathInput.value = current; return; }
+    current = r.path;
+    dirs = r.dirs || [];
+    pathInput.value = current;
+    render();
+    list.scrollTop = 0;
+    onChange?.(current);
+  }
+
+  pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(pathInput.value.trim() || '~'); } });
+  showHidden.addEventListener('change', render);
+
+  const newName = el('input', { type: 'text', class: 'mono', placeholder: 'имя новой папки', spellcheck: 'false' });
+  const createRow = el('div', { class: 'row', hidden: true }, newName,
+    el('button', { type: 'button', class: 'btn', onclick: () => createDir() }, 'Создать'));
+  async function createDir() {
+    const name = newName.value.trim();
+    if (!name) { newName.focus(); return; }
+    const r = await native.request('sshMkdir', { ...ctx, parent: current, name });
+    if (r.error) { error.textContent = r.error; return; }
+    newName.value = '';
+    createRow.hidden = true;
+    go(r.path);
+  }
+  newName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); createDir(); } });
+
+  const node = el('div', { class: 'field rb' },
+    el('label', {}, 'Папка на сервере'),
+    el('div', { class: 'row' }, pathInput, el('button', { type: 'button', class: 'btn', title: 'Перейти', onclick: () => go(pathInput.value.trim() || '~') }, 'Перейти')),
+    list,
+    el('div', { class: 'rb-tools' },
+      el('label', { class: 'check' }, showHidden, 'Скрытые папки'),
+      el('button', { type: 'button', class: 'btn ghost', onclick: () => { createRow.hidden = !createRow.hidden; if (!createRow.hidden) newName.focus(); } }, icon(ICONS.plus), 'Новая папка')),
+    createRow, error);
+  go(startPath || '~');
+  return { node, getPath: () => current };
+}
+
+// Шаг 2: выбор папки на сервере, название и вариант запуска.
+function sshFolderStep(modal, close, ctx) {
+  let nameTouched = false;
+  const name = el('input', { type: 'text', placeholder: 'Название проекта', spellcheck: 'false' });
+  name.addEventListener('input', () => { nameTouched = true; });
+  const browser = remoteBrowser(ctx, '~', (path) => { if (!nameTouched) name.value = path === '/' ? ctx.host : remoteBaseName(path); });
+  const launch = launchControls(defaultLaunch(ctx.user));
+  const error = el('div', { class: 'modal-error' });
+
+  const form = el('form', { onsubmit: (e) => {
+    e.preventDefault();
+    const dir = browser.getPath();
+    if (!dir) return;
+    const ssh = { ...ctx, dir };
+    const label = sshLabel(ssh);
+    let p = findProjectByPath(label);
+    if (!p) p = addProject(name.value.trim() || remoteBaseName(dir), label);
+    else if (name.value.trim()) p.name = name.value.trim();
+    p.ssh = ssh;
+    p.launch = launch.read();
+    close();
+    openProject(p, { forceNew: true });
+    saveState();
+  } },
+    browser.node,
+    el('div', { class: 'field' }, el('label', {}, 'Название проекта'), name),
+    launch.node,
+    error,
+    el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'),
+      el('button', { type: 'submit', class: 'btn primary' }, 'Открыть здесь')));
+  modal.replaceChildren(el('h2', {}, `${ctx.user}@${ctx.host}`), el('div', { class: 'modal-sub' }, 'Шаг 2 из 2 — выберите папку проекта'), form);
 }
 
 async function openLocalFolderFlow() {
@@ -1099,8 +1205,20 @@ function editSshProjectDialog(p) {
     const port = el('input', { type: 'number', min: 1, max: 65535, value: p.ssh.port || 22, class: 'port' });
     const user = el('input', { type: 'text', class: 'mono', value: p.ssh.user, spellcheck: 'false' });
     const dir = el('input', { type: 'text', class: 'mono', value: p.ssh.dir || '~', spellcheck: 'false' });
-    const command = el('input', { type: 'text', class: 'mono', value: p.command || '', placeholder: state.settings.command || DEFAULT_COMMAND, spellcheck: 'false' });
+    const launch = launchControls(p.launch || defaultLaunch(p.ssh.user));
     const error = el('div', { class: 'modal-error' });
+    const sameServer = () => host.value.trim() === p.ssh.host && user.value.trim() === p.ssh.user && (Number(port.value) || 22) === (Number(p.ssh.port) || 22);
+
+    const browse = el('button', { type: 'button', class: 'btn', onclick: () => {
+      if (!sameServer() || !p.ssh.keyPath) { error.textContent = 'Сначала сохраните новые параметры сервера и подключитесь — затем можно выбирать папку.'; return; }
+      openModal((m2, close2) => {
+        const browser = remoteBrowser({ ...sshTarget(p.ssh), keyPath: p.ssh.keyPath }, dir.value.trim() || '~');
+        m2.append(el('h2', {}, 'Папка на сервере'), el('form', { onsubmit: (e) => { e.preventDefault(); dir.value = browser.getPath() || dir.value; close2(); } },
+          browser.node,
+          el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close2 }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Выбрать'))));
+      });
+    } }, 'Обзор…');
+
     const form = el('form', { onsubmit: (e) => {
       e.preventDefault();
       const ssh = { host: host.value.trim(), port: Number(port.value) || 22, user: user.value.trim(), dir: dir.value.trim() || '~', keyPath: p.ssh.keyPath };
@@ -1109,11 +1227,11 @@ function editSshProjectDialog(p) {
       const clash = findProjectByPath(label);
       if (clash && clash !== p) { error.textContent = `Такой проект уже есть: «${clash.name}»`; return; }
       // Сменился сервер, пользователь или порт — ключ подготовим заново при следующем открытии.
-      if (ssh.host !== p.ssh.host || ssh.user !== p.ssh.user || ssh.port !== (Number(p.ssh.port) || 22)) ssh.keyPath = '';
+      if (!sameServer()) ssh.keyPath = '';
       p.ssh = ssh;
       p.path = label;
-      p.name = name.value.trim() || `${ssh.host}:${ssh.dir}`;
-      p.command = command.value.trim();
+      p.name = name.value.trim() || remoteBaseName(ssh.dir);
+      p.launch = launch.read();
       for (const s of projectSessions(p)) s.name = p.name;
       close();
       renderAll();
@@ -1122,9 +1240,9 @@ function editSshProjectDialog(p) {
       el('div', { class: 'field' }, el('label', {}, 'Название'), name),
       el('div', { class: 'field' }, el('label', {}, 'Сервер и порт'), el('div', { class: 'row' }, host, port)),
       el('div', { class: 'field' }, el('label', {}, 'Пользователь'), user),
-      el('div', { class: 'field' }, el('label', {}, 'Папка на сервере'), dir),
-      el('div', { class: 'field' }, el('label', {}, 'Команда запуска на сервере'), command,
-        el('div', { class: 'hint' }, `Пусто — команда из настроек. Ключ: ${p.ssh.keyPath || 'будет создан при подключении'}`)),
+      el('div', { class: 'field' }, el('label', {}, 'Папка на сервере'), el('div', { class: 'row' }, dir, browse)),
+      launch.node,
+      el('div', { class: 'hint' }, `Ключ: ${p.ssh.keyPath || 'будет подготовлен при подключении'}`),
       error,
       el('div', { class: 'modal-actions' }, el('button', { type: 'button', class: 'btn', onclick: close }, 'Отмена'), el('button', { type: 'submit', class: 'btn primary' }, 'Сохранить')));
     modal.append(el('h2', {}, 'Проект на сервере'), form);
@@ -1247,6 +1365,9 @@ native.on('init', async (m) => {
   const saved = m.state;
   if (saved && typeof saved === 'object') {
     if (Array.isArray(saved.projects)) state.projects = saved.projects.filter((p) => p && p.path);
+    for (const p of state.projects) {
+      if (p.ssh && !p.launch) p.launch = p.command ? { mode: 'custom', custom: p.command, cont: false } : defaultLaunch(p.ssh.user);
+    }
     Object.assign(state.settings, saved.settings || {});
     if (Array.isArray(saved.openProjects)) state.openProjects = saved.openProjects;
   }

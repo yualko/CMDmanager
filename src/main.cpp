@@ -369,14 +369,23 @@ void HandleWebMessage(const std::string& text) {
         std::wstring path =
             PickFolder(Utf8ToWide(m.value("title", std::string("Выберите папку"))), Utf8ToWide(m.value("initial", std::string())));
         Reply(m, {{"path", path.empty() ? json(nullptr) : json(WideToUtf8(path))}});
-    } else if (type == "sshPrepare") {
-        // Генерация ключа и проверка входа занимают секунды — делаем в фоне, ответ присылаем через WM_APP_POST.
-        const int reqId = m.value("reqId", 0);
-        std::thread([reqId, host = m.value("host", std::string()), port = m.value("port", 22),
-                     user = m.value("user", std::string())] {
-            json r = PrepareSshKey(host, port, user);
+    } else if (type == "sshConnect" || type == "sshListDir" || type == "sshMkdir") {
+        // SSH-операции занимают секунды — выполняем в фоне, ответ присылаем через WM_APP_POST.
+        SshTarget target{m.value("host", std::string()), m.value("port", 22), m.value("user", std::string())};
+        std::thread([m, type, target] {
+            json r;
+            if (type == "sshConnect") {
+                wchar_t exe[MAX_PATH * 2];
+                DWORD n = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+                r = SshConnect(target, m.value("password", std::string()), std::wstring(exe, n));
+            } else if (type == "sshListDir") {
+                r = SshListDir(target, m.value("keyPath", std::string()), m.value("path", std::string("~")));
+            } else {
+                r = SshMakeDir(target, m.value("keyPath", std::string()), m.value("parent", std::string()),
+                               m.value("name", std::string()));
+            }
             r["type"] = "reply";
-            r["reqId"] = reqId;
+            r["reqId"] = m.value("reqId", 0);
             auto* text = new std::string(r.dump(-1, ' ', false, json::error_handler_t::replace));
             if (!PostMessageW(g_hwnd, WM_APP_POST, 0, reinterpret_cast<LPARAM>(text))) delete text;
         }).detach();
@@ -608,6 +617,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nCmdShow) {
+    // Запуск в роли SSH_ASKPASS (ssh просит пароль при установке ключа) — ответить и выйти, окно не создаём.
+    if (int code = 0; RunAsAskpassIfRequested(&code)) return code;
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -22,14 +23,28 @@ struct RunResult {
     std::string output;  // stdout + stderr
 };
 
-// Запускает консольную программу без окна и ждёт завершения.
-RunResult RunHidden(const std::wstring& commandLine, DWORD timeoutMs);
+// Запускает консольную программу без окна и ждёт завершения. extraEnv добавляется к окружению.
+RunResult RunHidden(const std::wstring& commandLine, DWORD timeoutMs,
+                    const std::vector<std::pair<std::wstring, std::wstring>>& extraEnv = {});
 
-// Готовит ключ для подключения: создаёт ~/.ssh/id_ed25519_<host> (если его нет)
-// и проверяет, пускает ли сервер по этому ключу.
-// Возвращает { keyPath, publicKey, keyCreated, authOk, needsInstall, error }.
-nlohmann::json PrepareSshKey(const std::string& host, int port, const std::string& user);
+struct SshTarget {
+    std::string host;
+    int port = 22;
+    std::string user;
+};
 
-// Проверка имени хоста / пользователя: только безопасные символы, без ведущего «-».
-bool IsValidSshHost(const std::string& host);
-bool IsValidSshUser(const std::string& user);
+// Подключение к серверу: создаёт ключ ~/.ssh/id_ed25519_<host> (или берёт существующий),
+// проверяет вход по ключу и, если сервер его ещё не знает, устанавливает ключ, войдя по паролю.
+// Пароль передаётся ssh через SSH_ASKPASS (askpassExe — наш же exe) и нигде не сохраняется.
+// Результат: { keyPath, keyCreated, keyInstalled } | { needsPassword, keyPath } | { error }.
+nlohmann::json SshConnect(const SshTarget& target, const std::string& password, const std::wstring& askpassExe);
+
+// Список подпапок на сервере: { path (абсолютный), dirs: [...] } | { error }.
+nlohmann::json SshListDir(const SshTarget& target, const std::string& keyPath, const std::string& path);
+
+// Создаёт подпапку name в parent: { path } | { error }.
+nlohmann::json SshMakeDir(const SshTarget& target, const std::string& keyPath, const std::string& parent,
+                          const std::string& name);
+
+// Режим SSH_ASKPASS: если процесс запущен ssh как askpass-программа, печатает пароль и возвращает true.
+bool RunAsAskpassIfRequested(int* exitCode);

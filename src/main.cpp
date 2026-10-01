@@ -391,6 +391,16 @@ void HandleWebMessage(const std::string& text) {
         }).detach();
     } else if (type == "createFolder") {
         CreateProjectFolder(m);
+    } else if (type == "ensureDir") {
+        fs::path dir = Utf8ToWide(m.value("path", std::string()));
+        std::error_code ec;
+        if (dir.empty() || !dir.is_absolute()) {
+            Reply(m, {{"error", "Укажите полный путь к локальной папке"}});
+        } else if (fs::is_directory(dir, ec) || fs::create_directories(dir, ec)) {
+            Reply(m, {{"path", PathToUtf8(dir)}});
+        } else {
+            Reply(m, {{"error", "Не удалось создать папку " + PathToUtf8(dir) + ": " + WideToUtf8(Utf8ToWide(ec.message()))}});
+        }
     } else if (type == "checkPaths") {
         json exists = json::array();
         for (auto& p : m.value("paths", json::array())) {

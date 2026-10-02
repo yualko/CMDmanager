@@ -49,6 +49,44 @@ function saveTeam() {
 }
 
 // ---------- запуск консоли участника ----------
+// Где работают агенты: на этом компьютере; на сервере (ssh + обратный туннель к MCP-узлу);
+// на этом компьютере с проектом на сервере (агент сам ходит туда по ssh).
+function teamPlacement(project) {
+  if (!project?.ssh) return 'local';
+  return project.claudeAt === 'local' ? 'local-ssh' : 'remote';
+}
+
+// Участник на сервере: MCP по HTTP на порт туннеля, файлы — в ~/.cmdmanager/team на сервере.
+const REMOTE_TEAM_DIR = '$HOME/.cmdmanager/team';
+function remoteMcpSetup(member) {
+  member.rport = 20000 + Math.floor(Math.random() * 40000);
+  const url = `http://127.0.0.1:${member.rport}/mcp/${env.mcpSecret}/${member.token}`;
+  const extraArgs = [];
+  const files = {};
+  let opencode = null;
+  if (member.agent === 'claude') {
+    const path = `${REMOTE_TEAM_DIR}/mcp-${member.token}.json`;
+    files[path] = JSON.stringify({ mcpServers: { cmdmanager: { type: 'http', url } } });
+    extraArgs.push('--mcp-config', `"${path}"`);
+  } else if (member.agent === 'codex') {
+    extraArgs.push('-c', shQuote(`mcp_servers.cmdmanager.url="${url}"`));
+  } else {
+    opencode = { mcp: { cmdmanager: { type: 'remote', url, enabled: true, oauth: false } } };
+  }
+  return { extraArgs, files, opencode, forward: `127.0.0.1:${member.rport}:${env.mcpAddr}` };
+}
+
+// Команда для сервера: записать файлы, выставить переменные, затем запустить агента.
+function remotePrelude(files, vars) {
+  const parts = [];
+  const paths = Object.keys(files);
+  if (paths.length) parts.push(`mkdir -p "${REMOTE_TEAM_DIR}"${paths.some((x) => x.startsWith('.cmdmanager/')) ? ' .cmdmanager' : ''}`);
+  for (const [path, text] of Object.entries(files)) parts.push(`printf '%s' ${shQuote(text)} > "${path}"`);
+  const exports = Object.entries(vars).map(([k, v]) => `${k}=${String(v).startsWith('$HOME/') ? `"${v}"` : shQuote(v)}`);
+  if (exports.length) parts.push(`export ${exports.join(' ')}`);
+  return parts.length ? `${parts.join('; ')}; ` : '';
+}
+
 function mcpSetupFor(member) {
   const mcpEnv = { CMDM_MCP_ADDR: env.mcpAddr, CMDM_MCP_SECRET: env.mcpSecret, CMDM_MCP_TOKEN: member.token };
   const server = { command: env.exePath, args: ['--mcp'] };
@@ -79,6 +117,8 @@ function launchMember(member, { resume = false, extraFiles = null } = {}) {
   member.token = randomToken();
   member.inbox = [];
   const launch = normalizeLaunch({ agent: member.agent, mode: member.mode || 'skip', server: member.server, model: member.model, cont: resume });
+  const where = teamPlacement(project);
+  if (where === 'remote') return launchRemoteMember(member, project, launch, { resume, extraFiles });
   const mcp = mcpSetupFor(member);
   const model = modelSetup(member.agent, launch);
   const extraEnv = { ...mcp.extraEnv, ...(model?.env || {}) };
@@ -92,6 +132,7 @@ function launchMember(member, { resume = false, extraFiles = null } = {}) {
   // Окно без «запасной» оболочки: если агент завершится, программа не впишет задание в PowerShell.
   const s = addSession({
     projectId: project.id, name: `${agentDef(member.agent).name}${model ? ' · local' : ''}`, path: project.path,
+    cwd: where === 'local-ssh' ? project.localDir : null,
     command: built.command, typePrompt: built.typePrompt, account: accountSetup(member.account), agent: null,
     extraEnv, writeFiles, keepShell: false,
   });
@@ -100,7 +141,44 @@ function launchMember(member, { resume = false, extraFiles = null } = {}) {
   return s;
 }
 
+function launchRemoteMember(member, project, launch, { resume, extraFiles }) {
+  const mcp = remoteMcpSetup(member);
+  const model = modelSetup(member.agent, launch);
+  const files = { ...mcp.files, ...(extraFiles || {}) };
+  const vars = { ...(model?.env || {}) };
+  if (mcp.opencode || model?.opencode) {
+    const path = `${REMOTE_TEAM_DIR}/${member.agent}-${member.token}.json`;
+    files[path] = JSON.stringify({ $schema: 'https://opencode.ai/config.json', ...(model?.opencode || {}), ...(mcp.opencode || {}) });
+    vars[member.agent === 'mimo' ? 'MIMOCODE_CONFIG' : 'OPENCODE_CONFIG'] = path;
+  }
+  const built = buildLaunch(launch, { shell: 'sh', root: project.ssh.user === 'root', prompt: resume ? '' : rolePrompt(member), extraArgs: mcp.extraArgs });
+  const s = addSession({
+    projectId: project.id, name: `${agentDef(member.agent).name} · ${project.ssh.host}${model ? ' · local' : ''}`, path: project.path,
+    command: remotePrelude(files, vars) + built.command, typePrompt: built.typePrompt, ssh: { ...project.ssh },
+    account: accountSetup(member.account, { remote: true }), agent: null, keepShell: false, sshForward: mcp.forward,
+  });
+  member.sessionId = s.id;
+  if (resume) deliver(member, t('[CMD Manager] Продолжаем работу команды. Посмотри текущее состояние задач и продолжай по своей роли.'), null, { silent: true });
+  return s;
+}
+
+// Проект на сервере, агенты на этом компьютере: подсказка, как работать с сервером.
+function remoteWorkNote() {
+  const project = state.projects.find((p) => p.id === team.projectId);
+  if (teamPlacement(project) !== 'local-ssh') return '';
+  const ssh = project.ssh;
+  return ' ' + t('Проект находится на сервере {0} в папке {1}. Все команды по проекту (git, сборка, тесты) выполняй на сервере через ssh, отдельным вызовом на каждую команду: {2} \'cd {1} && …\'.', `${ssh.user}@${ssh.host}`, ssh.dir || '~', sshCommandFor(ssh));
+}
+
 function rolePrompt(member) {
+  // Явный путь к папке проекта: слабые модели иначе иногда придумывают свой.
+  const project = state.projects.find((p) => p.id === team.projectId);
+  const where = teamPlacement(project);
+  const dir = where === 'local-ssh' ? project.localDir : where === 'remote' ? (project.ssh.dir || '~') : project.path;
+  const note = where === 'local-ssh' ? remoteWorkNote() : ' ' + t('Папка проекта (рабочая папка): {0}. Все файлы создавай внутри неё.', dir);
+  return rolePromptText(member) + note;
+}
+function rolePromptText(member) {
   const others = team.members.filter((m) => m !== member).map((m) => `${memberLabel(m)} (${agentDef(m.agent).name}${modelLabel(m) ? `, ${modelLabel(m)}` : ''})`).join('; ');
   if (member.role === 'orchestrator') {
     const source = team.tasksFile
@@ -528,11 +606,13 @@ function toggleTeamPanel() {
 
 // ---------- мастер создания команды ----------
 function teamWizard() {
-  const local = state.projects.filter((p) => !p.ssh);
-  if (!local.length) { toast(t('Сначала создайте или откройте проект на этом компьютере'), 'error'); return; }
+  const local = state.projects;
+  if (!local.length) { toast(t('Сначала создайте или откройте проект'), 'error'); return; }
   openModal((modal, close) => {
     const active = sessions.get(activeId);
-    const project = el('select', {}, local.map((p) => el('option', { value: p.id, selected: active?.projectId === p.id }, p.name)));
+    const projectLabel = (p) => !p.ssh ? p.name
+      : `${p.name} — ${p.ssh.user}@${p.ssh.host} (${teamPlacement(p) === 'remote' ? t('агенты на сервере') : t('агенты на этом компьютере')})`;
+    const project = el('select', {}, local.map((p) => el('option', { value: p.id, selected: active?.projectId === p.id }, projectLabel(p))));
     const tasks = el('textarea', { rows: 6, placeholder: t('Список задач или ТЗ — по одной задаче в строке. Можно оставить пустым и написать оркестратору потом.') });
     const checkpoint = el('input', { type: 'number', min: 0, max: 100, value: 10 });
     const available = localAgents || new Set();
@@ -560,11 +640,15 @@ function teamWizard() {
     }), el('button', { type: 'button', class: 'btn ghost', onclick: () => { rows.push({ role: 'developer', agent: pick('claude', 'codex'), mode: 'skip', server: '', model: '', account: '' }); render(); } }, icon(ICONS.plus), t('Добавить участника')));
     render();
     const error = el('div', { class: 'modal-error' });
-    const form = el('form', { onsubmit: (e) => {
+    const form = el('form', { onsubmit: async (e) => {
       e.preventDefault();
       if (rows.filter((r) => r.role === 'orchestrator').length !== 1) { error.textContent = t('Нужен ровно один оркестратор'); return; }
       if (!rows.some((r) => r.role !== 'orchestrator')) { error.textContent = t('Добавьте хотя бы одного исполнителя'); return; }
       const p = state.projects.find((x) => x.id === project.value);
+      error.textContent = '';
+      const err = await prepareTeamProject(p);
+      if (err === 'password') { close(); sshConnectDialog({ project: p }); return; }
+      if (err) { error.textContent = err; return; }
       startTeam(p, rows, tasks.value.trim(), Math.max(0, Number(checkpoint.value) || 0));
       close();
     } },
@@ -580,6 +664,25 @@ function teamWizard() {
     modal.append(el('h2', {}, 'Новая команда агентов'),
       el('div', { class: 'modal-sub' }, 'Оркестратор раздаёт задачи по одной, разработчик делает, проверяющий проверяет. Окна связываются автоматически.'), form);
   });
+}
+
+// SSH-проект: ключ готов (иначе подключаемся), для «агентов на этом компьютере» — локальная папка.
+async function prepareTeamProject(p) {
+  if (!p.ssh) return '';
+  if (!p.ssh.keyPath) {
+    const r = await native.request('sshConnect', sshTarget(p.ssh));
+    if (r.needsPassword) return 'password';
+    if (r.error) return r.error;
+    p.ssh.keyPath = r.keyPath;
+  }
+  if (teamPlacement(p) === 'local-ssh') {
+    const dir = p.localDir || defaultLocalDir(p.ssh, p.name);
+    const r = await native.request('ensureDir', { path: dir });
+    if (r.error) return r.error;
+    p.localDir = r.path || dir;
+  }
+  saveState();
+  return '';
 }
 
 function startTeam(project, rows, tasksText, checkpointEvery) {
@@ -598,8 +701,15 @@ function startTeam(project, rows, tasksText, checkpointEvery) {
   // Окнам команды нужно место: прячем список проектов (вернуть — кнопкой слева вверху или Ctrl+Shift+B).
   if (state.settings.sidebar) toggleSidebar();
   panes = panes.map(() => null);
-  if (tasksText) team.tasksFile = `${project.path}\\.cmdmanager\\tasks-${new Date().toISOString().slice(0, 10)}.md`;
-  for (const m of team.members) launchMember(m, { extraFiles: m.role === 'orchestrator' && tasksText ? { [team.tasksFile]: tasksText } : null });
+  // Файл задач: на сервере — в папке проекта (путь от неё), иначе — в папке, где запущены агенты.
+  const where = teamPlacement(project);
+  const tasksName = `tasks-${new Date().toISOString().slice(0, 10)}.md`;
+  let tasksPath = '';
+  if (tasksText) {
+    if (where === 'remote') { tasksPath = `.cmdmanager/${tasksName}`; team.tasksFile = tasksPath; }
+    else { tasksPath = `${where === 'local-ssh' ? project.localDir : project.path}\\.cmdmanager\\${tasksName}`; team.tasksFile = tasksPath; }
+  }
+  for (const m of team.members) launchMember(m, { extraFiles: m.role === 'orchestrator' && tasksText ? { [tasksPath]: tasksText } : null });
   saveTeam();
   $('#team-panel').hidden = false;
   renderAll();

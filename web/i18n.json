@@ -3794,16 +3794,60 @@
   "zh": "解散",
   "ja": "解散"
  },
- "Сначала создайте или откройте проект на этом компьютере": {
-  "en": "First create or open a project on this computer",
-  "de": "Erstellen oder öffnen Sie zuerst ein Projekt auf diesem Computer",
-  "fr": "Créez ou ouvrez d’abord un projet sur cet ordinateur",
-  "es": "Primero crea o abre un proyecto en este equipo",
-  "pt": "Primeiro crie ou abra um projeto neste computador",
-  "it": "Prima crea o apri un progetto su questo computer",
-  "tr": "Önce bu bilgisayarda bir proje oluşturun veya açın",
-  "zh": "请先在本机上创建或打开一个项目",
-  "ja": "まずこのコンピューターでプロジェクトを作成するか開いてください"
+ "Сначала создайте или откройте проект": {
+  "en": "First create or open a project",
+  "de": "Erstellen oder öffnen Sie zuerst ein Projekt",
+  "fr": "Créez ou ouvrez d’abord un projet",
+  "es": "Primero crea o abre un proyecto",
+  "pt": "Primeiro crie ou abra um projeto",
+  "it": "Prima crea o apri un progetto",
+  "tr": "Önce bir proje oluşturun veya açın",
+  "zh": "请先创建或打开一个项目",
+  "ja": "まずプロジェクトを作成するか開いてください"
+ },
+ "Папка проекта (рабочая папка): {0}. Все файлы создавай внутри неё.": {
+  "en": "Project folder (working folder): {0}. Create all files inside it.",
+  "de": "Projektordner (Arbeitsordner): {0}. Lege alle Dateien darin an.",
+  "fr": "Dossier du projet (dossier de travail) : {0}. Crée tous les fichiers à l’intérieur.",
+  "es": "Carpeta del proyecto (carpeta de trabajo): {0}. Crea todos los archivos dentro de ella.",
+  "pt": "Pasta do projeto (pasta de trabalho): {0}. Crie todos os arquivos dentro dela.",
+  "it": "Cartella del progetto (cartella di lavoro): {0}. Crea tutti i file al suo interno.",
+  "tr": "Proje klasörü (çalışma klasörü): {0}. Tüm dosyaları bunun içinde oluştur.",
+  "zh": "项目文件夹（工作文件夹）：{0}。所有文件都在其中创建。",
+  "ja": "プロジェクトフォルダー（作業フォルダー）: {0}。すべてのファイルはその中に作成してください。"
+ },
+ "агенты на сервере": {
+  "en": "agents on the server",
+  "de": "Agenten auf dem Server",
+  "fr": "agents sur le serveur",
+  "es": "agentes en el servidor",
+  "pt": "agentes no servidor",
+  "it": "agenti sul server",
+  "tr": "ajanlar sunucuda",
+  "zh": "智能体在服务器上",
+  "ja": "エージェントはサーバー上"
+ },
+ "агенты на этом компьютере": {
+  "en": "agents on this computer",
+  "de": "Agenten auf diesem Computer",
+  "fr": "agents sur cet ordinateur",
+  "es": "agentes en este equipo",
+  "pt": "agentes neste computador",
+  "it": "agenti su questo computer",
+  "tr": "ajanlar bu bilgisayarda",
+  "zh": "智能体在本机上",
+  "ja": "エージェントはこのコンピューター上"
+ },
+ "Проект находится на сервере {0} в папке {1}. Все команды по проекту (git, сборка, тесты) выполняй на сервере через ssh, отдельным вызовом на каждую команду: {2} 'cd {1} && …'.": {
+  "en": "The project is on the server {0} in the folder {1}. Run every project command (git, build, tests) on the server over ssh, one call per command: {2} 'cd {1} && …'.",
+  "de": "Das Projekt liegt auf dem Server {0} im Ordner {1}. Führe alle Projektbefehle (git, Build, Tests) auf dem Server per ssh aus, einen Aufruf pro Befehl: {2} 'cd {1} && …'.",
+  "fr": "Le projet se trouve sur le serveur {0}, dans le dossier {1}. Exécute toutes les commandes du projet (git, build, tests) sur le serveur via ssh, un appel par commande : {2} 'cd {1} && …'.",
+  "es": "El proyecto está en el servidor {0}, en la carpeta {1}. Ejecuta todos los comandos del proyecto (git, compilación, pruebas) en el servidor por ssh, una llamada por comando: {2} 'cd {1} && …'.",
+  "pt": "O projeto está no servidor {0}, na pasta {1}. Execute todos os comandos do projeto (git, build, testes) no servidor via ssh, uma chamada por comando: {2} 'cd {1} && …'.",
+  "it": "Il progetto si trova sul server {0} nella cartella {1}. Esegui tutti i comandi del progetto (git, build, test) sul server via ssh, una chiamata per comando: {2} 'cd {1} && …'.",
+  "tr": "Proje {0} sunucusunda, {1} klasöründe. Projeyle ilgili tüm komutları (git, derleme, testler) sunucuda ssh ile, her komut için ayrı bir çağrıyla çalıştır: {2} 'cd {1} && …'.",
+  "zh": "项目位于服务器 {0} 的 {1} 文件夹中。所有项目命令（git、构建、测试）都通过 ssh 在服务器上执行，每条命令单独调用：{2} 'cd {1} && …'。",
+  "ja": "プロジェクトはサーバー {0} のフォルダー {1} にあります。プロジェクトのコマンド（git、ビルド、テスト）はすべて ssh でサーバー上で実行し、1 コマンドごとに 1 回呼び出してください: {2} 'cd {1} && …'。"
  },
  "Список задач или ТЗ — по одной задаче в строке. Можно оставить пустым и написать оркестратору потом.": {
   "en": "Task list or specification — one task per line. You can leave it empty and write to the orchestrator later.",

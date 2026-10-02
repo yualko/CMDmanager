@@ -160,9 +160,9 @@ function remoteDirExpr(dir) {
 
 // Команда для сервера: перейти в папку, запустить команду и остаться в интерактивном шелле.
 // Запускаем через login+interactive шелл, чтобы подхватились PATH из ~/.profile и ~/.bashrc (туда ставится claude).
-function sshRemoteCommand(dir, command, account = null) {
+function sshRemoteCommand(dir, command, account = null, keepShell = true) {
   const inner = `${remoteAccountPrefix(account)}cd ${remoteDirExpr(dir)} 2>/dev/null || echo ${shQuote(t('Папка не найдена: {0}', dir || '~'))}; ` +
-    `${command ? `${command}; ` : ''}exec "$SHELL" -l`;
+    `${command ? `${command}; ` : ''}${keepShell ? 'exec "$SHELL" -l' : ''}`;
   return `exec "$SHELL" -lic ${shQuote(inner)}`;
 }
 
@@ -170,10 +170,12 @@ function sshCommonArgs(ssh) {
   return ['-p', String(ssh.port || 22), '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30'];
 }
 
-function sshConnectArgs(ssh, command, account = null) {
+// forward — обратный туннель «порт на сервере → MCP-узел программы» (консоли команды на сервере).
+function sshConnectArgs(ssh, command, account = null, { forward = null, keepShell = true } = {}) {
   const args = ['-t', ...sshCommonArgs(ssh)];
+  if (forward) args.push('-o', 'ExitOnForwardFailure=yes', '-R', forward);
   if (ssh.keyPath) args.push('-i', ssh.keyPath);
-  args.push('-l', ssh.user, ssh.host, sshRemoteCommand(ssh.dir, command, account));
+  args.push('-l', ssh.user, ssh.host, sshRemoteCommand(ssh.dir, command, account, keepShell));
   return args;
 }
 
@@ -514,11 +516,12 @@ async function detectRemoteAgents(ctx) {
 }
 
 class Session {
-  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '', account = null, extraEnv = null, writeFiles = null, keepShell = true }) {
+  constructor({ projectId, name, path, cwd = null, command, ssh = null, agent = null, typePrompt = '', account = null, extraEnv = null, writeFiles = null, keepShell = true, sshForward = null }) {
+    this.sshForward = sshForward;  // обратный туннель к MCP-узлу (участник команды на сервере)
     this.keepShell = keepShell;  // false — окно закрывается вместе с агентом (консоли команды: туда пишет программа)
     // OpenCode и MiMo (Bun) падают, если стартуют в узком терминале: запускаем широкими,
     // а под размер окна подстраиваемся, когда их интерфейс уже загрузился.
-    this.minStartCols = /^(opencode|mimo)\b/.test(command || '') ? 100 : 0;
+    this.minStartCols = /(^|; )(\S+=\S+ )*(opencode|mimo)\b/.test(command || '') ? 100 : 0;
     this.holdSize = false;
     this.extraEnv = extraEnv;      // переменные поверх аккаунта: модель с сервера, MCP команды
     this.writeFiles = writeFiles;  // файлы, которые пишутся перед запуском (конфиги MCP/OpenCode, список задач)
@@ -598,7 +601,7 @@ class Session {
         env: { ...(this.account?.env || {}), ...(this.extraEnv || {}) }, ensureDirs: this.account?.dirs, files: this.account?.files,
         writeFiles: this.writeFiles, keepShell: this.keepShell });
     } else {
-      native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command, this.account) });
+      native.send({ ...base, cwd: env.home, program: 'ssh', args: sshConnectArgs(this.ssh, this.command, this.account, { forward: this.sshForward, keepShell: this.keepShell }) });
     }
   }
 
